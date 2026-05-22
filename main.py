@@ -8,7 +8,7 @@ from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler
 from dotenv import load_dotenv
 
-from bot.handlers import (
+from handlers import (
     start, help_cmd, credits_cmd, buy_cmd, refer_cmd,
     starter_cmd, standard_cmd, power_cmd, monthly_cmd,
     # Equities
@@ -20,10 +20,10 @@ from bot.handlers import (
     # Mixed
     dividend_cmd, global_cmd,
 )
-from bot.database import add_credits, mark_transaction_paid
-from bot.paystack import verify_webhook_signature, verify_transaction
-from bot.scheduler import create_scheduler
-from admin.routes import router as admin_router
+
+from database import add_credits, mark_transaction_paid
+from paystack import verify_webhook_signature, verify_transaction
+from scheduler import create_scheduler
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
