@@ -131,45 +131,28 @@ class EmailSignup(BaseModel):
 
 @app.get("/")
 async def root():
-    """Health check endpoint"""
-    try:
-        session = get_session(engine)
-        
-        companies_count = session.query(Company).filter_by(is_active=True).count()
-        prices_count = session.query(StockPrice).count()
-        latest_inflation = session.query(InflationData).order_by(
-            InflationData.date.desc()
-        ).first()
-        
-        session.close()
-        
-        return {
-            "status": "online",
-            "service": "NGX Investment Intelligence API",
-            "version": "1.0.0",
-            "data": {
-                "companies_tracked": companies_count,
-                "price_records": prices_count,
-                "current_inflation": float(latest_inflation.headline_cpi) if latest_inflation else None,
-                "last_updated": latest_inflation.date.isoformat() if latest_inflation else None
-            }
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+    """Lightweight liveness probe — no DB call so Railway health check always succeeds."""
+    return {
+        "status": "online",
+        "service": "NGX Investment Intelligence API",
+        "version": "1.0.0",
+    }
 
 
 @app.get("/health")
 async def health_check():
-    """Detailed health check"""
+    """Lightweight health check — returns 200 immediately for Railway probe."""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/health/db")
+async def db_health_check():
+    """Full DB connectivity check (separate from Railway probe)."""
     try:
         session = get_session(engine)
-        # Test database connection
         session.query(Company).first()
         session.close()
-        
+
         return {
             "status": "healthy",
             "database": "connected",
