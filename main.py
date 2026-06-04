@@ -381,6 +381,9 @@ async def email_signup(signup: EmailSignup):
 TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
+# Stores the last incoming message for debugging — cleared on each message
+_last_message: dict = {}
+
 
 async def _tg_send(chat_id: int, text: str) -> dict:
     """Send a message to a Telegram chat. Returns the Telegram API response."""
@@ -409,6 +412,15 @@ async def telegram_webhook(request: Request):
     chat_id = message["chat"]["id"]
     text = (message.get("text") or "").strip()
     user_name = message.get("from", {}).get("first_name", "Investor")
+
+    # Store for /telegram-webhook/last-message diagnostic
+    _last_message.update({
+        "chat_id": chat_id,
+        "user_id": message.get("from", {}).get("id"),
+        "username": message.get("from", {}).get("username"),
+        "first_name": user_name,
+        "text": text,
+    })
 
     if not text:
         return {"ok": True}
@@ -465,6 +477,14 @@ async def telegram_webhook(request: Request):
         await _tg_send(chat_id, f"Analysis unavailable: {str(e)[:200]}")
 
     return {"ok": True}
+
+
+@app.get("/telegram-webhook/last-message")
+async def last_message():
+    """Returns the last message received from Telegram — shows the real chat_id."""
+    if not _last_message:
+        return {"info": "No messages received yet. Send any message to @Naija_Guru_Bot first."}
+    return _last_message
 
 
 @app.get("/telegram-webhook/debug")
