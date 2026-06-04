@@ -1,152 +1,693 @@
+"""
+Main FastAPI Application - Deployment Ready
+Place this as main.py in your root directory
+"""
+import sys
 import os
-import json
-import logging
-from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, Request, HTTPException, Header
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler
-from dotenv import load_dotenv
+# Patch DNS before any network calls (falls back to 8.8.8.8 when router DNS fails)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dns_patch  # noqa: F401
 
-from handlers import (
-    start, help_cmd, credits_cmd, buy_cmd, refer_cmd,
-    starter_cmd, standard_cmd, power_cmd, monthly_cmd,
-    # Equities
-    analyse_cmd, technical_cmd, fullanalysis_cmd, financials_cmd,
-    moat_cmd, value_cmd, risk_cmd, growth_cmd, institutional_cmd,
-    debate_cmd, portfolio_cmd, sentiment_cmd, earnings_cmd,
-    # Fixed income & funds
-    macro_cmd, tbills_cmd, bonds_cmd, funds_cmd, compare_cmd,
-    # Mixed
-    dividend_cmd, global_cmd,
+from fastapi import Query
+
+# Add current directory to Python path
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
+from typing import List, Optional
+from datetime import date, datetime
+from decimal import Decimal
+
+# Import from local modules
+from database.models import (
+    create_database_engine, get_session,
+    Company, StockPrice, InflationPerformance, InflationData, MacroIndicator
+)
+from calculators.inflation_calculator import InflationCalculator
+from sqlalchemy import and_, func
+
+# Initialize FastAPI
+app = FastAPI(
+    title="NGX Investment Intelligence API",
+    version="1.0.0",
+    description="Nigerian Stock Exchange Investment Analysis Platform"
 )
 
-from database import add_credits, mark_transaction_paid
-from paystack import verify_webhook_signature, verify_transaction
-from scheduler import create_scheduler
+# CORS Configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Update this to your frontend domain in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+# Load environment variables
+from dotenv import load_dotenv
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
-logger = logging.getLogger(__name__)
 
-BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# Backtesting router (registered after env is loaded)
+from backtest_api_routes import router as backtest_router
+app.include_router(backtest_router)
 
-tg_app    = Application.builder().token(BOT_TOKEN).build()
-scheduler = create_scheduler()
+# Database configuration
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    os.getenv("DATABASE_URL_INTERNAL")  # Supabase/Railway internal URL
+)
 
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not set in environment variables")
 
-def register_handlers():
-    h = tg_app.add_handler
-    h(CommandHandler("start",          start))
-    h(CommandHandler("help",           help_cmd))
-    h(CommandHandler("credits",        credits_cmd))
-    h(CommandHandler("buy",            buy_cmd))
-    h(CommandHandler("refer",          refer_cmd))
-    h(CommandHandler("starter",        starter_cmd))
-    h(CommandHandler("standard",       standard_cmd))
-    h(CommandHandler("power",          power_cmd))
-    h(CommandHandler("monthly",        monthly_cmd))
-    # Equity
-    h(CommandHandler("analyse",        analyse_cmd))
-    h(CommandHandler("analyze",        analyse_cmd))
-    h(CommandHandler("technical",      technical_cmd))
-    h(CommandHandler("fullanalysis",   fullanalysis_cmd))
-    h(CommandHandler("financials",     financials_cmd))
-    h(CommandHandler("moat",           moat_cmd))
-    h(CommandHandler("value",          value_cmd))
-    h(CommandHandler("risk",           risk_cmd))
-    h(CommandHandler("growth",         growth_cmd))
-    h(CommandHandler("institutional",  institutional_cmd))
-    h(CommandHandler("debate",         debate_cmd))
-    h(CommandHandler("portfolio",      portfolio_cmd))
-    h(CommandHandler("sentiment",      sentiment_cmd))
-    h(CommandHandler("earnings",       earnings_cmd))
-    # Fixed income & funds
-    h(CommandHandler("macro",          macro_cmd))
-    h(CommandHandler("tbills",         tbills_cmd))
-    h(CommandHandler("bonds",          bonds_cmd))
-    h(CommandHandler("funds",          funds_cmd))
-    h(CommandHandler("compare",        compare_cmd))
-    # Mixed
-    h(CommandHandler("dividend",       dividend_cmd))
-    h(CommandHandler("global",         global_cmd))
+# Initialize database connection
+engine = create_database_engine(DATABASE_URL)
+calculator = InflationCalculator(DATABASE_URL)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    register_handlers()
-    await tg_app.initialize()
-    webhook_endpoint = f"{WEBHOOK_URL}/telegram/webhook"
-    await tg_app.bot.set_webhook(url=webhook_endpoint)
-    logger.info(f"Webhook registered: {webhook_endpoint}")
-    scheduler.start()
-    logger.info("Scheduler started — daily signals active")
-    yield
-    scheduler.shutdown(wait=False)
-    await tg_app.bot.delete_webhook()
-    await tg_app.shutdown()
+# ==================== PYDANTIC MODELS ====================
+
+class StockBasic(BaseModel):
+    ticker: str
+    name: str
+    sector: str
+    current_price: float
+    change_percent: float
+    has_fx_revenue: bool
+    
+    class Config:
+        from_attributes = True
+
+class StockDetail(BaseModel):
+    ticker: str
+    name: str
+    sector: str
+    listing_date: Optional[date] = None
+    current_price: float
+    change_percent: float
+    volume: int
+    has_fx_revenue: bool
+    return_1yr: float
+    return_3yr: float
+    return_5yr: float
+    excess_return_1yr: float
+    excess_return_3yr: float
+    excess_return_5yr: float
+    beats_inflation: bool
+    volatility_1yr: float
+    risk_adjusted_return: float
+    
+    class Config:
+        from_attributes = True
+
+class InflationBeater(BaseModel):
+    ticker: str
+    name: str
+    sector: str
+    excess_return_3yr: float
+    has_fx_revenue: bool
+    current_price: float
+
+class EmailSignup(BaseModel):
+    email: EmailStr
+    name: str
+    frequency: str
 
 
-app = FastAPI(title="NGX Analyst Bot v2", lifespan=lifespan)
-app.include_router(admin_router)
-
+# ==================== API ENDPOINTS ====================
 
 @app.get("/")
-async def health():
-    return {"status": "ok", "version": "2.0", "bot": "NGX Analyst Bot"}
+async def root():
+    """Health check endpoint"""
+    try:
+        session = get_session(engine)
+        
+        companies_count = session.query(Company).filter_by(is_active=True).count()
+        prices_count = session.query(StockPrice).count()
+        latest_inflation = session.query(InflationData).order_by(
+            InflationData.date.desc()
+        ).first()
+        
+        session.close()
+        
+        return {
+            "status": "online",
+            "service": "NGX Investment Intelligence API",
+            "version": "1.0.0",
+            "data": {
+                "companies_tracked": companies_count,
+                "price_records": prices_count,
+                "current_inflation": float(latest_inflation.headline_cpi) if latest_inflation else None,
+                "last_updated": latest_inflation.date.isoformat() if latest_inflation else None
+            }
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 
-@app.post("/telegram/webhook")
-async def telegram_webhook(request: Request):
-    body = await request.json()
-    update = Update.de_json(body, tg_app.bot)
-    await tg_app.process_update(update)
-    return {"ok": True}
+@app.get("/health")
+async def health_check():
+    """Detailed health check"""
+    try:
+        session = get_session(engine)
+        # Test database connection
+        session.query(Company).first()
+        session.close()
+        
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "database": "disconnected",
+            "error": str(e)
+        }
 
 
-@app.post("/paystack/webhook")
-async def paystack_webhook(
-    request: Request,
-    x_paystack_signature: str = Header(None),
-):
-    body = await request.body()
-    if not verify_webhook_signature(body, x_paystack_signature or ""):
-        raise HTTPException(status_code=400, detail="Invalid signature")
-
-    event = json.loads(body)
-    if event.get("event") == "charge.success":
-        reference = event["data"]["reference"]
-        txn = mark_transaction_paid(reference)
-        if txn and txn.get("status") != "paid":
-            telegram_id = txn["telegram_id"]
-            credits     = txn["credits"]
-            add_credits(telegram_id, credits)
-            try:
-                bot = Bot(token=BOT_TOKEN)
-                await bot.send_message(
-                    chat_id=telegram_id,
-                    text=(
-                        f"✅ *Payment confirmed!*\n\n"
-                        f"*{credits} credits* added to your account.\n\n"
-                        f"Try: /technical GTCO or /tbills"
-                    ),
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                logger.error(f"Notify failed for {telegram_id}: {e}")
-
-    return {"status": "ok"}
+@app.get("/api/stocks", response_model=List[StockBasic])
+async def get_all_stocks():
+    """Get all active stocks with latest prices"""
+    session = get_session(engine)
+    
+    try:
+        stocks = []
+        companies = session.query(Company).filter_by(is_active=True).all()
+        
+        for company in companies:
+            latest_price = session.query(StockPrice).filter_by(
+                company_id=company.id
+            ).order_by(StockPrice.date.desc()).first()
+            
+            if latest_price:
+                stocks.append(StockBasic(
+                    ticker=company.ticker,
+                    name=company.name,
+                    sector=company.sector,
+                    current_price=float(latest_price.close),
+                    change_percent=float(latest_price.change_percent or 0),
+                    has_fx_revenue=company.has_fx_revenue
+                ))
+        
+        return stocks
+    finally:
+        session.close()
 
 
-@app.get("/paystack/callback")
-async def paystack_callback(reference: str):
-    result = verify_transaction(reference)
-    if result["success"]:
-        return {"message": "Payment successful! Return to Telegram.", "credits": result["credits"]}
-    return {"message": "Payment could not be verified. Contact support."}
+@app.get("/api/stocks/{ticker}", response_model=StockDetail)
+async def get_stock_detail(ticker: str):
+    """Get detailed information for a specific stock"""
+    session = get_session(engine)
+    
+    try:
+        company = session.query(Company).filter_by(ticker=ticker.upper()).first()
+        if not company:
+            raise HTTPException(status_code=404, detail=f"Stock {ticker} not found")
+        
+        latest_price = session.query(StockPrice).filter_by(
+            company_id=company.id
+        ).order_by(StockPrice.date.desc()).first()
+        
+        performance = session.query(InflationPerformance).filter_by(
+            company_id=company.id
+        ).order_by(InflationPerformance.calculation_date.desc()).first()
+        
+        if not latest_price:
+            raise HTTPException(status_code=404, detail=f"No price data for {ticker}")
+        
+        if not performance:
+            raise HTTPException(status_code=404, detail=f"No performance data for {ticker}")
+        
+        return StockDetail(
+            ticker=company.ticker,
+            name=company.name,
+            sector=company.sector,
+            listing_date=company.listing_date,
+            current_price=float(latest_price.close),
+            change_percent=float(latest_price.change_percent or 0),
+            volume=int(latest_price.volume or 0),
+            has_fx_revenue=company.has_fx_revenue,
+            return_1yr=float(performance.return_1yr or 0),
+            return_3yr=float(performance.return_3yr or 0),
+            return_5yr=float(performance.return_5yr or 0),
+            excess_return_1yr=float(performance.excess_return_1yr or 0),
+            excess_return_3yr=float(performance.excess_return_3yr or 0),
+            excess_return_5yr=float(performance.excess_return_5yr or 0),
+            beats_inflation=performance.beats_inflation_all or False,
+            volatility_1yr=float(performance.volatility_1yr or 0),
+            risk_adjusted_return=float(performance.risk_adjusted_return_3yr or 0)
+        )
+    finally:
+        session.close()
 
 
+@app.get("/api/inflation-beaters", response_model=List[InflationBeater])
+async def get_inflation_beaters(min_excess: float = 0.0):
+    """Get stocks that beat inflation"""
+    try:
+        beaters = calculator.get_inflation_beaters(min_excess_return_3yr=min_excess)
+        
+        result = []
+        session = get_session(engine)
+        
+        try:
+            for stock in beaters[:20]:
+                company = session.query(Company).filter_by(ticker=stock['ticker']).first()
+                if not company:
+                    continue
+                    
+                latest_price = session.query(StockPrice).filter_by(
+                    company_id=company.id
+                ).order_by(StockPrice.date.desc()).first()
+                
+                result.append(InflationBeater(
+                    ticker=stock['ticker'],
+                    name=stock['name'],
+                    sector=stock['sector'],
+                    excess_return_3yr=stock['excess_return_3yr'],
+                    has_fx_revenue=stock['has_fx_revenue'],
+                    current_price=float(latest_price.close) if latest_price else 0
+                ))
+            
+            return result
+        finally:
+            session.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/sectors")
+async def get_sectors():
+    """Get sector performance summary"""
+    session = get_session(engine)
+    
+    try:
+        sectors = session.query(
+            Company.sector,
+            func.count(Company.id).label('count'),
+            func.avg(InflationPerformance.excess_return_3yr).label('avg_excess')
+        ).join(InflationPerformance).filter(
+            Company.is_active == True
+        ).group_by(Company.sector).all()
+        
+        return [
+            {
+                "sector": sector,
+                "stock_count": count,
+                "avg_excess_return": float(avg_excess or 0)
+            }
+            for sector, count, avg_excess in sectors
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/api/macro")
+async def get_macro_indicators():
+    """Get latest Nigerian macro indicators"""
+    session = get_session(engine)
+    
+    try:
+        latest_macro = session.query(MacroIndicator).order_by(
+            MacroIndicator.date.desc()
+        ).first()
+        
+        latest_inflation = session.query(InflationData).order_by(
+            InflationData.date.desc()
+        ).first()
+        
+        if not latest_macro or not latest_inflation:
+            raise HTTPException(status_code=404, detail="Macro data not available")
+        
+        return {
+            "date": latest_macro.date.isoformat(),
+            "cbm_mpr": float(latest_macro.mpr),
+            "usd_ngn_official": float(latest_macro.usd_ngn_official),
+            "usd_ngn_parallel": float(latest_macro.usd_ngn_parallel or 0),
+            "inflation_rate": float(latest_inflation.headline_cpi),
+            "food_inflation": float(latest_inflation.food_inflation or 0),
+            "brent_crude": float(latest_macro.brent_crude_usd or 0),
+            "treasury_bill_91d": float(latest_macro.treasury_bill_91d or 0)
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/search")
+async def search_stocks(q: str):
+    """Search stocks by ticker or name"""
+    if not q or len(q) < 2:
+        return []
+    
+    session = get_session(engine)
+    
+    try:
+        results = session.query(Company).filter(
+            and_(
+                Company.is_active == True,
+                (Company.ticker.ilike(f"%{q}%") | Company.name.ilike(f"%{q}%"))
+            )
+        ).limit(10).all()
+        
+        return [
+            {
+                "ticker": company.ticker,
+                "name": company.name,
+                "sector": company.sector
+            }
+            for company in results
+        ]
+    finally:
+        session.close()
+
+
+@app.post("/api/email-signup")
+async def email_signup(signup: EmailSignup):
+    """Sign up for email alerts"""
+    # TODO: Implement actual email signup logic
+    # For now, just log and return success
+    
+    print(f"New signup: {signup.email} ({signup.name}) - {signup.frequency}")
+    
+    return {
+        "status": "success",
+        "message": f"Successfully subscribed {signup.email} to {signup.frequency} updates"
+    }
+
+
+# ==================== DASHBOARD ====================
+
+DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NGX Investment Intelligence</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+    nav { background: #1e293b; padding: 1rem 2rem; display: flex; gap: 1rem; align-items: center; border-bottom: 1px solid #334155; }
+    nav h1 { font-size: 1.2rem; font-weight: 700; color: #38bdf8; flex: 1; }
+    nav button { background: transparent; border: 1px solid #334155; color: #94a3b8; padding: 0.4rem 1rem; border-radius: 6px; cursor: pointer; transition: all .2s; }
+    nav button.active, nav button:hover { background: #0ea5e9; border-color: #0ea5e9; color: #fff; }
+    main { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    .card h2 { font-size: 1.1rem; font-weight: 600; color: #38bdf8; margin-bottom: 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
+    .metric { background: #0f172a; border-radius: 8px; padding: 1rem; text-align: center; }
+    .metric .label { font-size: .75rem; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
+    .metric .value { font-size: 1.6rem; font-weight: 700; margin-top: .25rem; }
+    .pos { color: #34d399; } .neg { color: #f87171; } .neu { color: #fbbf24; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+    label { display: flex; flex-direction: column; gap: .3rem; font-size: .85rem; color: #94a3b8; }
+    input, select { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: .5rem .75rem; border-radius: 6px; font-size: .9rem; }
+    input:focus, select:focus { outline: none; border-color: #0ea5e9; }
+    .btn { background: #0ea5e9; color: #fff; border: none; padding: .6rem 1.5rem; border-radius: 8px; cursor: pointer; font-size: .95rem; font-weight: 600; transition: background .2s; }
+    .btn:hover { background: #0284c7; }
+    .btn:disabled { background: #334155; cursor: not-allowed; }
+    .error { color: #f87171; background: #450a0a; border: 1px solid #991b1b; border-radius: 8px; padding: .75rem 1rem; margin-bottom: 1rem; }
+    .trades-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+    .trades-table th { text-align: left; padding: .5rem .75rem; color: #64748b; border-bottom: 1px solid #334155; }
+    .trades-table td { padding: .5rem .75rem; border-bottom: 1px solid #1e293b; }
+    .badge { display: inline-block; padding: .15rem .5rem; border-radius: 4px; font-size: .75rem; font-weight: 600; }
+    .badge-buy { background: #064e3b; color: #34d399; }
+    .badge-sell { background: #450a0a; color: #f87171; }
+    .compare-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState } = React;
+const API_BASE = '/api';
+
+function BacktestPage({ setPage }) {
+  const [backtest, setBacktest] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [params, setParams] = useState({
+    startDate: '2023-01-01',
+    endDate: new Date().toISOString().split('T')[0],
+    initialCapital: 1000000,
+    portfolioSize: 10,
+    rebalanceFreq: 'quarterly',
+    minExcess: 5.0
+  });
+
+  const runBacktest = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/backtest/inflation-strategy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start_date: params.startDate,
+          end_date: params.endDate,
+          initial_capital: params.initialCapital,
+          portfolio_size: params.portfolioSize,
+          rebalance_frequency: params.rebalanceFreq,
+          min_excess_return: params.minExcess
+        })
+      });
+
+      const data = await response.json();
+      setBacktest(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto">
+      <button
+        onClick={() => setPage('home')}
+        className="mb-4 text-purple-600 hover:underline"
+      >
+        ← Back
+      </button>
+
+      <div className="bg-gradient-to-r from-blue-500 to-purple-600 text-white p-8 rounded-lg mb-8">
+        <h1 className="text-3xl font-bold mb-2">📊 Backtest Strategy</h1>
+        <p>Test how efficient your investment strategy would have been historically</p>
+      </div>
+
+      {/* Parameters */}
+      <div className="bg-white p-6 rounded-lg shadow mb-6">
+        <h2 className="text-xl font-bold mb-4">Strategy Parameters</h2>
+
+        <div className="grid md:grid-cols-2 gap-6">
+          <div>
+            <label className="block text-sm font-medium mb-2">Start Date</label>
+            <input
+              type="date"
+              value={params.startDate}
+              onChange={(e) => setParams({...params, startDate: e.target.value})}
+              className="w-full px-4 py-2 border rounded"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">End Date</label>
+            <input
+              type="date"
+              value={params.endDate}
+              onChange={(e) => setParams({...params, endDate: e.target.value})}
+              className="w-full px-4 py-2 border rounded"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Initial Capital (₦)</label>
+            <input
+              type="number"
+              value={params.initialCapital}
+              onChange={(e) => setParams({...params, initialCapital: Number(e.target.value)})}
+              className="w-full px-4 py-2 border rounded"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Portfolio Size</label>
+            <select
+              value={params.portfolioSize}
+              onChange={(e) => setParams({...params, portfolioSize: Number(e.target.value)})}
+              className="w-full px-4 py-2 border rounded"
+            >
+              <option value="5">5 stocks</option>
+              <option value="10">10 stocks</option>
+              <option value="15">15 stocks</option>
+              <option value="20">20 stocks</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Rebalance Frequency</label>
+            <select
+              value={params.rebalanceFreq}
+              onChange={(e) => setParams({...params, rebalanceFreq: e.target.value})}
+              className="w-full px-4 py-2 border rounded"
+            >
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="yearly">Yearly</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Min 3yr Excess Return (%)</label>
+            <input
+              type="number"
+              value={params.minExcess}
+              onChange={(e) => setParams({...params, minExcess: Number(e.target.value)})}
+              className="w-full px-4 py-2 border rounded"
+            />
+          </div>
+        </div>
+
+        <button
+          onClick={runBacktest}
+          disabled={loading}
+          className="mt-6 w-full px-6 py-3 bg-purple-600 text-white rounded-lg font-semibold hover:bg-purple-700 disabled:bg-gray-400"
+        >
+          {loading ? 'Running backtest...' : 'Run Backtest'}
+        </button>
+      </div>
+
+      {/* Results */}
+      {backtest && !error && (
+        <div className="bg-white rounded-lg shadow p-8">
+          <h2 className="text-2xl font-bold mb-6">📈 Results</h2>
+
+          {/* Metrics Grid */}
+          <div className="grid md:grid-cols-4 gap-4 mb-8">
+            <div className="bg-blue-50 p-6 rounded">
+              <div className="text-sm text-gray-600">Total Return</div>
+              <div className={`text-3xl font-bold ${backtest.metrics.total_return >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                {backtest.metrics.total_return >= 0 ? '+' : ''}{backtest.metrics.total_return.toFixed(2)}%
+              </div>
+            </div>
+
+            <div className="bg-green-50 p-6 rounded">
+              <div className="text-sm text-gray-600">Annual Return</div>
+              <div className={`text-3xl font-bold ${backtest.metrics.annual_return >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                {backtest.metrics.annual_return >= 0 ? '+' : ''}{backtest.metrics.annual_return.toFixed(2)}%
+              </div>
+            </div>
+
+            <div className="bg-purple-50 p-6 rounded">
+              <div className="text-sm text-gray-600">Sharpe Ratio</div>
+              <div className="text-3xl font-bold text-purple-600">
+                {backtest.metrics.sharpe_ratio.toFixed(2)}
+              </div>
+            </div>
+
+            <div className="bg-red-50 p-6 rounded">
+              <div className="text-sm text-gray-600">Max Drawdown</div>
+              <div className="text-3xl font-bold text-red-600">
+                {backtest.metrics.max_drawdown.toFixed(2)}%
+              </div>
+            </div>
+          </div>
+
+          {/* Trading Metrics */}
+          <div className="grid md:grid-cols-3 gap-4">
+            <div className="p-4 border rounded">
+              <div className="font-semibold">Total Trades</div>
+              <div className="text-2xl">{backtest.metrics.num_trades}</div>
+            </div>
+
+            <div className="p-4 border rounded">
+              <div className="font-semibold">Win Rate</div>
+              <div className="text-2xl text-green-600">{backtest.metrics.win_rate.toFixed(1)}%</div>
+            </div>
+
+            <div className="p-4 border rounded">
+              <div className="font-semibold">Final Value</div>
+              <div className="text-2xl">₦{backtest.metrics.final_value.toLocaleString()}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+          Error: {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HomePage({ setPage }) {
+  return (
+    <div className="max-w-4xl mx-auto text-center py-20">
+      <h1 className="text-4xl font-bold mb-4 text-gray-800">NGX Investment Intelligence</h1>
+      <p className="text-gray-500 mb-10 text-lg">Nigerian Stock Exchange Analysis Platform</p>
+      <button
+        onClick={() => setPage('backtest')}
+        className="px-8 py-4 bg-purple-600 text-white rounded-lg font-semibold hover:bg-purple-700 text-lg"
+      >
+        📊 Open Backtest Dashboard
+      </button>
+    </div>
+  );
+}
+
+function App() {
+  const [page, setPage] = useState('backtest');
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <nav className="bg-white border-b px-6 py-4 flex items-center gap-4 shadow-sm">
+        <h1 className="text-xl font-bold text-purple-700 flex-1">NGX Investment Intelligence</h1>
+        <button
+          className={`px-4 py-2 rounded-lg font-medium transition-colors ${page === 'backtest' ? 'bg-purple-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+          onClick={() => setPage('backtest')}
+        >
+          Backtest
+        </button>
+      </nav>
+      <main className="p-6">
+        {page === 'home' && <HomePage setPage={setPage} />}
+        {page === 'backtest' && <BacktestPage setPage={setPage} />}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """Serve the backtesting web dashboard"""
+    return HTMLResponse(content=DASHBOARD_HTML)
+
+
+
+# Run with: uvicorn main:app --reload
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
