@@ -8,7 +8,7 @@ import string
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Numeric, Text
+from sqlalchemy import Column, Integer, BigInteger, String, Boolean, DateTime, Numeric, Text
 from database.models import Base, get_session
 
 FREE_CREDITS       = int(os.getenv("FREE_CREDITS_ON_SIGNUP", "3"))
@@ -69,7 +69,7 @@ class BotUser(Base):
     """One row per Telegram user."""
     __tablename__ = "bot_users"
 
-    telegram_id      = Column(Integer, primary_key=True)
+    telegram_id      = Column(BigInteger, primary_key=True)  # Telegram IDs exceed 32-bit int
     username         = Column(String(120))
     first_name       = Column(String(120))
     credits          = Column(Integer, default=FREE_CREDITS)
@@ -86,7 +86,7 @@ class BotTransaction(Base):
     __tablename__ = "bot_transactions"
 
     id                  = Column(Integer, primary_key=True, autoincrement=True)
-    telegram_id         = Column(Integer, nullable=False, index=True)
+    telegram_id         = Column(BigInteger, nullable=False, index=True)  # BigInteger for Telegram IDs
     plan                = Column(String(50))
     amount_ngn          = Column(Numeric(12, 2))
     credits_added       = Column(Integer)
