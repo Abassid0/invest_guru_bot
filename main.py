@@ -58,10 +58,9 @@ from backtest_api_routes import router as backtest_router
 app.include_router(backtest_router)
 
 # Database configuration
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    os.getenv("DATABASE_URL_INTERNAL")  # Supabase/Railway internal URL
-)
+DATABASE_URL = (
+    os.getenv("DATABASE_URL") or os.getenv("DATABASE_URL_INTERNAL") or ""
+).strip()
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set in environment variables")

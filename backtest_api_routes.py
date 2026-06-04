@@ -28,7 +28,7 @@ _backtest_engine: Optional[NGXBacktestEngine] = None
 def get_engine() -> NGXBacktestEngine:
     global _backtest_engine
     if _backtest_engine is None:
-        url = os.getenv("DATABASE_URL")
+        url = (os.getenv("DATABASE_URL") or "").strip()
         if not url:
             raise HTTPException(status_code=503, detail="DATABASE_URL environment variable is not set")
         _backtest_engine = NGXBacktestEngine(url)
