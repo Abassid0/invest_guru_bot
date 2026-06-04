@@ -378,6 +378,59 @@ async def sync_key_check(admin_key: str = Query(...)):
     }
 
 
+# ==================== PAYSTACK PAYMENT WEBHOOK ====================
+
+PAYSTACK_SECRET = (os.getenv("PAYSTACK_SECRET_KEY") or "").strip()
+
+
+@app.post("/api/payment/webhook")
+async def paystack_webhook(request: Request):
+    """Receive payment confirmation from Paystack and credit the user."""
+    import hmac, hashlib, json as _json
+    from database.bot_db import add_credits, PLANS
+
+    body = await request.body()
+    sig = request.headers.get("x-paystack-signature", "")
+    expected = hmac.new(PAYSTACK_SECRET.encode(), body, hashlib.sha512).hexdigest()
+    if sig != expected:
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    event = _json.loads(body)
+    if event.get("event") != "charge.success":
+        return {"ok": True}
+
+    data = event.get("data", {})
+    ref = data.get("reference", "")
+    meta = data.get("metadata", {})
+    telegram_id = int(meta.get("telegram_id", 0))
+    plan_key = meta.get("plan", "per_view")
+
+    if not telegram_id or not ref:
+        return {"ok": True}
+
+    plan = PLANS.get(plan_key, PLANS["per_view"])
+    session = get_session(engine)
+    try:
+        add_credits(
+            session, telegram_id,
+            amount=plan["credits"],
+            plan=plan_key,
+            paystack_ref=ref,
+            amount_ngn=plan["price_ngn"],
+        )
+        # Notify user on Telegram
+        await _tg_send(
+            telegram_id,
+            f"Payment confirmed!\n\n"
+            f"Plan: {plan['name']}\n"
+            f"Credits added: {plan['credits']}\n"
+            f"Type /credits to see your balance."
+        )
+    finally:
+        session.close()
+    return {"ok": True}
+
+
 @app.post("/api/sync")
 async def trigger_sync(admin_key: str = Query(...)):
     """Trigger a full data sync. Requires SYNC_KEY env var (or ADMIN_PASSWORD fallback)."""
@@ -448,8 +501,13 @@ async def _tg_send(chat_id: int, text: str) -> dict:
 
 @app.post("/telegram-webhook")
 async def telegram_webhook(request: Request):
-    """Receive Telegram updates and respond using Claude."""
+    """Receive Telegram updates, check credits, respond using Claude."""
     from claude_client import get_client, NGX_SYSTEM_PROMPT
+    from database.bot_db import (
+        get_or_create_user, get_credit_balance, deduct_credit,
+        add_credits, get_user_stats, PLANS
+    )
+    import httpx as _httpx
 
     try:
         data = await request.json()
@@ -461,14 +519,16 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     chat_id = message["chat"]["id"]
+    tg_user = message.get("from", {})
     text = (message.get("text") or "").strip()
-    user_name = message.get("from", {}).get("first_name", "Investor")
+    user_name = tg_user.get("first_name", "Investor")
+    username  = tg_user.get("username", "")
 
     # Store for /telegram-webhook/last-message diagnostic
     _last_message.update({
         "chat_id": chat_id,
-        "user_id": message.get("from", {}).get("id"),
-        "username": message.get("from", {}).get("username"),
+        "user_id": tg_user.get("id"),
+        "username": username,
         "first_name": user_name,
         "text": text,
     })
@@ -476,8 +536,24 @@ async def telegram_webhook(request: Request):
     if not text:
         return {"ok": True}
 
+    # ── Ensure user exists in DB ──────────────────────────────────────────────
+    bot_session = get_session(engine)
+    try:
+        # Handle /start REF_CODE or /join REF_CODE
+        ref_code = None
+        if text.startswith("/start ") or text.startswith("/join "):
+            ref_code = text.split(maxsplit=1)[1].strip() if " " in text else None
+        user = get_or_create_user(
+            bot_session, chat_id, username=username,
+            first_name=user_name, referral_code_used=ref_code
+        )
+        credits_left = user.credits
+    finally:
+        bot_session.close()
+
     HELP = (
-        "NGX Investment Intelligence Bot - @Naija_Guru_Bot\n\n"
+        f"NGX Investment Intelligence Bot - @Naija_Guru_Bot\n"
+        f"Credits remaining: {credits_left}\n\n"
         "EQUITIES\n"
         "/analyse TICKER - market & sector analysis\n"
         "/technical TICKER - chart signals (entry, SL, TP)\n"
@@ -506,12 +582,108 @@ async def telegram_webhook(request: Request):
         "/backtest 5years - test last 5 years\n"
         "/backtest hold GTCO DANGCEM - buy-and-hold test\n"
         "/backtest compare - compare all strategies\n\n"
-        "Or just type any investment question!"
+        "ACCOUNT & PAYMENTS\n"
+        "/credits - check your credit balance\n"
+        "/buy - top up credits (per-view or monthly plans)\n"
+        "/refer - get your referral link to earn free credits\n\n"
+        "Each analysis costs 1 credit. /buy to get more."
     )
 
-    # /start  /help
-    if text.startswith("/start") or text.startswith("/help"):
-        await _tg_send(chat_id, f"Welcome {user_name}!\n\n" + HELP)
+    # /start  /help  /join
+    if text.startswith("/start") or text.startswith("/help") or text.startswith("/join"):
+        greeting = (
+            f"Welcome {user_name}!\n"
+            f"You have {credits_left} free {'credit' if credits_left == 1 else 'credits'} to start.\n\n"
+        ) if not text.startswith("/help") else ""
+        await _tg_send(chat_id, greeting + HELP)
+        return {"ok": True}
+
+    # /credits — show balance and usage stats
+    if text.startswith("/credits"):
+        bot_session2 = get_session(engine)
+        try:
+            stats = get_user_stats(bot_session2, chat_id)
+        finally:
+            bot_session2.close()
+        await _tg_send(chat_id,
+            f"Your Account\n\n"
+            f"Credits: {stats.get('credits', 0)}\n"
+            f"Total referrals: {stats.get('total_referrals', 0)}\n"
+            f"Paid referrals: {stats.get('paid_referrals', 0)}\n"
+            f"Total spent: N{stats.get('total_spent_ngn', 0):,.0f}\n"
+            f"Member since: {stats.get('member_since', 'N/A')}\n\n"
+            f"Use /buy to top up or /refer to earn free credits."
+        )
+        return {"ok": True}
+
+    # /buy — show plans and generate payment links
+    if text.startswith("/buy"):
+        import httpx as _hx
+        parts = text.split()
+        chosen_plan = parts[1].lower() if len(parts) > 1 else None
+
+        if chosen_plan and chosen_plan in PLANS:
+            plan = PLANS[chosen_plan]
+            # Create Paystack payment link
+            try:
+                async with _hx.AsyncClient(timeout=15) as client:
+                    r = await client.post(
+                        "https://api.paystack.co/transaction/initialize",
+                        headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"},
+                        json={
+                            "email": f"{chat_id}@ngxbot.telegram",
+                            "amount": plan["price_kobo"],
+                            "metadata": {
+                                "telegram_id": chat_id,
+                                "plan": chosen_plan,
+                                "username": username,
+                            },
+                            "callback_url": f"https://{os.getenv('WEBHOOK_URL', '').strip()}/payment-success",
+                        }
+                    )
+                resp = r.json()
+                if resp.get("status"):
+                    link = resp["data"]["authorization_url"]
+                    await _tg_send(chat_id,
+                        f"{plan['name']} — {plan['desc']}\n\n"
+                        f"Click to pay: {link}\n\n"
+                        f"You will receive {plan['credits']} credit(s) instantly after payment."
+                    )
+                else:
+                    await _tg_send(chat_id, "Payment link error. Please try again later.")
+            except Exception as e:
+                await _tg_send(chat_id, f"Payment error: {str(e)[:100]}")
+        else:
+            # Show plan menu
+            lines = ["Choose a plan:\n"]
+            for key, p in PLANS.items():
+                lines.append(f"/buy {key}\n  {p['name']} - {p['desc']}\n")
+            lines.append("\nExample: /buy monthly_basic")
+            await _tg_send(chat_id, "\n".join(lines))
+        return {"ok": True}
+
+    # /refer — show referral link and earnings
+    if text.startswith("/refer"):
+        bot_session3 = get_session(engine)
+        try:
+            stats = get_user_stats(bot_session3, chat_id)
+        finally:
+            bot_session3.close()
+        ref_code = stats.get("referral_code", "N/A")
+        bot_username = "Naija_Guru_Bot"
+        ref_link = f"https://t.me/{bot_username}?start={ref_code}"
+        await _tg_send(chat_id,
+            f"Your Referral Programme\n\n"
+            f"Your code: {ref_code}\n"
+            f"Your link: {ref_link}\n\n"
+            f"How it works:\n"
+            f"- Share your link with friends\n"
+            f"- They join and get 2 BONUS credits\n"
+            f"- When they make their FIRST payment, you get 5 FREE credits\n\n"
+            f"Your referrals: {stats.get('total_referrals', 0)} joined, "
+            f"{stats.get('paid_referrals', 0)} paid\n\n"
+            f"Share now and earn!"
+        )
         return {"ok": True}
 
     # /macro — served directly from DB, no Claude needed
@@ -652,12 +824,43 @@ async def telegram_webhook(request: Request):
             claude_prompt = template.format(arg=arg)
             break
 
+    # ── Credit gate — deduct 1 credit before calling Claude ─────────────────
+    gate_session = get_session(engine)
+    try:
+        has_credit = deduct_credit(gate_session, chat_id)
+    finally:
+        gate_session.close()
+
+    if not has_credit:
+        await _tg_send(chat_id,
+            f"You have 0 credits remaining.\n\n"
+            f"Top up to continue:\n"
+            f"/buy per_view   — N100 for 1 analysis\n"
+            f"/buy bundle_5   — N400 for 5 analyses\n"
+            f"/buy bundle_10  — N700 for 10 analyses\n"
+            f"/buy monthly_basic — N2,000 for 50/month\n\n"
+            f"Or earn free credits: /refer"
+        )
+        return {"ok": True}
+
     # All commands and free-text -> Claude with web search for live data
     try:
         from claude_client import run_analysis
         reply = run_analysis(claude_prompt, max_tokens=1500)
-        await _tg_send(chat_id, reply[:3800])
+        # Append remaining credit balance
+        gate_session2 = get_session(engine)
+        try:
+            remaining = get_credit_balance(gate_session2, chat_id)
+        finally:
+            gate_session2.close()
+        await _tg_send(chat_id, reply[:3700] + f"\n\n[{remaining} credit(s) left — /buy to top up]")
     except Exception as e:
+        # Refund the credit on error
+        refund_session = get_session(engine)
+        try:
+            add_credits(refund_session, chat_id, 1)
+        finally:
+            refund_session.close()
         await _tg_send(chat_id, f"Analysis unavailable: {str(e)[:200]}")
 
     return {"ok": True}

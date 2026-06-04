@@ -322,7 +322,9 @@ def create_database_engine(database_url: str):
 
 
 def init_database(engine):
-    """Initialize all tables"""
+    """Initialize all tables (market data + bot user tables)"""
+    # Import bot models so they register with Base before create_all
+    from database import bot_db as _  # noqa: F401
     Base.metadata.create_all(engine)
     print("✅ Database tables created successfully")
 

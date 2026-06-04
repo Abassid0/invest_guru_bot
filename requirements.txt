@@ -16,3 +16,4 @@ httpx
 anthropic
 yfinance
 beautifulsoup4
+pyOpenSSL
