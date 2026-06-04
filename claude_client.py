@@ -6,10 +6,13 @@ load_dotenv()
 
 _client = None
 
-# Load master skill as system prompt
-_SKILL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "SKILL.md")
-with open(_SKILL_PATH, "r", encoding="utf-8") as _f:
-    _RAW_SKILL = _f.read()
+# Load master skill as system prompt (same directory as this file)
+_SKILL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SKILL.md")
+try:
+    with open(_SKILL_PATH, "r", encoding="utf-8") as _f:
+        _RAW_SKILL = _f.read()
+except FileNotFoundError:
+    _RAW_SKILL = "You are an expert Nigerian capital markets analyst."
 
 # Strip YAML front-matter, keep body
 _SKILL_BODY = _RAW_SKILL.split("---", 2)[-1].strip() if "---" in _RAW_SKILL else _RAW_SKILL
@@ -42,10 +45,9 @@ def run_analysis(user_query: str, max_tokens: int = 1500) -> str:
     client = get_client()
 
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-haiku-4-5-20251001",
         max_tokens=max_tokens,
         system=NGX_SYSTEM_PROMPT,
-        tools=[{"type": "web_search_20250305", "name": "web_search"}],
         messages=[{"role": "user", "content": user_query}],
     )
 
