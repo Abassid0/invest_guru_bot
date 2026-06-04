@@ -20,8 +20,19 @@ from backtesting_engine import NGXBacktestEngine
 
 router = APIRouter(prefix="/api/backtest", tags=["backtesting"])
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-backtest_engine = NGXBacktestEngine(DATABASE_URL)
+# Lazy-initialised — engine is created on first request, not at import time.
+# This prevents a crash when DATABASE_URL is not yet available at startup.
+_backtest_engine: Optional[NGXBacktestEngine] = None
+
+
+def get_engine() -> NGXBacktestEngine:
+    global _backtest_engine
+    if _backtest_engine is None:
+        url = os.getenv("DATABASE_URL")
+        if not url:
+            raise HTTPException(status_code=503, detail="DATABASE_URL environment variable is not set")
+        _backtest_engine = NGXBacktestEngine(url)
+    return _backtest_engine
 
 
 # ==================== PYDANTIC MODELS ====================
@@ -59,7 +70,7 @@ async def backtest_inflation_strategy(request: BacktestInflationStrategyRequest)
     """Backtest the inflation-beating strategy (JSON body)"""
     try:
         start_dt, end_dt = _parse_dates(request.start_date, request.end_date)
-        result = backtest_engine.backtest_inflation_strategy(
+        result = get_engine().backtest_inflation_strategy(
             start_date=start_dt,
             end_date=end_dt,
             initial_capital=request.initial_capital,
@@ -81,7 +92,7 @@ async def backtest_buy_hold(request: BacktestBuyHoldRequest):
         if not request.tickers:
             raise ValueError("At least one ticker is required")
         start_dt, end_dt = _parse_dates(request.start_date, request.end_date)
-        result = backtest_engine.backtest_buy_and_hold(
+        result = get_engine().backtest_buy_and_hold(
             tickers=request.tickers,
             start_date=start_dt,
             end_date=end_dt,
@@ -103,7 +114,7 @@ async def compare_strategies(
     """Compare inflation-beating vs top-10 buy-and-hold"""
     try:
         start_dt, end_dt = _parse_dates(start_date, end_date)
-        results = backtest_engine.compare_strategies(
+        results = get_engine().compare_strategies(
             start_date=start_dt,
             end_date=end_dt,
             initial_capital=initial_capital,

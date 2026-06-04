@@ -305,6 +305,8 @@ class DataQuality(Base):
 # Database initialization functions
 def create_database_engine(database_url: str):
     """Create database engine"""
+    if not database_url:
+        raise ValueError("DATABASE_URL is not set. Add it to Railway environment variables.")
     if database_url.startswith("sqlite"):
         return create_engine(database_url, echo=False, connect_args={"check_same_thread": False})
     return create_engine(database_url, echo=False, pool_size=10, max_overflow=20)
