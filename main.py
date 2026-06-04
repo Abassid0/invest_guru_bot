@@ -364,8 +364,9 @@ async def search_stocks(q: str):
 
 @app.post("/api/sync")
 async def trigger_sync(admin_key: str = Query(...)):
-    """Trigger a full data sync. Requires admin key."""
-    if admin_key != os.getenv("ADMIN_PASSWORD", ""):
+    """Trigger a full data sync. Requires SYNC_KEY env var (or ADMIN_PASSWORD fallback)."""
+    valid_key = os.getenv("SYNC_KEY") or os.getenv("ADMIN_PASSWORD", "")
+    if admin_key != valid_key.strip():
         raise HTTPException(status_code=403, detail="Invalid admin key")
     from data_sync import run_full_sync
     result = run_full_sync()
