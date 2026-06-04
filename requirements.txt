@@ -14,3 +14,5 @@ loguru
 dnspython
 httpx
 anthropic
+yfinance
+beautifulsoup4

@@ -362,6 +362,40 @@ async def search_stocks(q: str):
         session.close()
 
 
+@app.post("/api/sync")
+async def trigger_sync(admin_key: str = Query(...)):
+    """Trigger a full data sync. Requires admin key."""
+    if admin_key != os.getenv("ADMIN_PASSWORD", ""):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    from data_sync import run_full_sync
+    result = run_full_sync()
+    return {"status": "complete", "result": result}
+
+
+@app.get("/api/sync/status")
+async def sync_status():
+    """Show latest price records count and freshness."""
+    session = get_session(engine)
+    try:
+        from sqlalchemy import func
+        latest_price = session.query(func.max(StockPrice.date)).scalar()
+        price_count = session.query(StockPrice).count()
+        latest_macro = session.query(MacroIndicator).order_by(MacroIndicator.date.desc()).first()
+        return {
+            "stock_prices": {
+                "total_records": price_count,
+                "latest_date": latest_price.isoformat() if latest_price else None,
+                "is_today": latest_price == date.today() if latest_price else False,
+            },
+            "macro": {
+                "latest_date": latest_macro.date.isoformat() if latest_macro else None,
+                "usd_ngn": float(latest_macro.usd_ngn_official) if latest_macro else None,
+            }
+        }
+    finally:
+        session.close()
+
+
 @app.post("/api/email-signup")
 async def email_signup(signup: EmailSignup):
     """Sign up for email alerts"""
@@ -513,17 +547,11 @@ async def telegram_webhook(request: Request):
             claude_prompt = template.format(arg=arg)
             break
 
-    # All commands and free-text -> Claude
+    # All commands and free-text -> Claude with web search for live data
     try:
-        client = get_client()
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1500,
-            system=NGX_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": claude_prompt}],
-        )
-        reply = response.content[0].text[:3800]
-        await _tg_send(chat_id, reply)
+        from claude_client import run_analysis
+        reply = run_analysis(claude_prompt, max_tokens=1500)
+        await _tg_send(chat_id, reply[:3800])
     except Exception as e:
         await _tg_send(chat_id, f"Analysis unavailable: {str(e)[:200]}")
 

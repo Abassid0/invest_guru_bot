@@ -45,9 +45,10 @@ def run_analysis(user_query: str, max_tokens: int = 1500) -> str:
     client = get_client()
 
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=max_tokens,
         system=NGX_SYSTEM_PROMPT,
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
         messages=[{"role": "user", "content": user_query}],
     )
 
