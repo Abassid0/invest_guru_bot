@@ -378,12 +378,23 @@ async def email_signup(signup: EmailSignup):
 
 # ==================== TELEGRAM WEBHOOK ====================
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+
+
+async def _tg_send(chat_id: int, text: str) -> dict:
+    """Send a message to a Telegram chat. Returns the Telegram API response."""
+    import httpx
+    # Use plain text to avoid Markdown parse errors
+    payload = {"chat_id": chat_id, "text": text}
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
+    return r.json()
+
 
 @app.post("/telegram-webhook")
 async def telegram_webhook(request: Request):
     """Receive Telegram updates and respond using Claude."""
-    import httpx
     from claude_client import get_client, NGX_SYSTEM_PROMPT
 
     try:
@@ -396,31 +407,26 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     chat_id = message["chat"]["id"]
-    text = message.get("text", "").strip()
+    text = (message.get("text") or "").strip()
     user_name = message.get("from", {}).get("first_name", "Investor")
-
-    async def send(msg: str):
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"},
-            )
 
     if not text:
         return {"ok": True}
 
+    # /start
     if text.startswith("/start"):
-        await send(
-            f"👋 *Welcome {user_name} to NGX Investment Intelligence Bot!*\n\n"
+        await _tg_send(chat_id,
+            f"Welcome {user_name} to NGX Investment Intelligence Bot!\n\n"
             "I provide institutional-grade analysis for the Nigerian Stock Exchange.\n\n"
-            "*Commands:*\n"
-            "/analyse GTCO — stock analysis\n"
-            "/macro — CBN rates, inflation, FX\n"
-            "/backtest — strategy backtesting\n\n"
-            "Or just ask me anything about Nigerian investments!"
+            "Commands:\n"
+            "/analyse GTCO - full stock analysis\n"
+            "/macro - CBN rates, inflation, FX\n"
+            "/backtest - strategy backtesting\n\n"
+            "Or just type any Nigerian investment question!"
         )
         return {"ok": True}
 
+    # /macro
     if text.startswith("/macro"):
         try:
             session = get_session(engine)
@@ -428,20 +434,23 @@ async def telegram_webhook(request: Request):
             inflation = session.query(InflationData).order_by(InflationData.date.desc()).first()
             session.close()
             if macro and inflation:
-                await send(
-                    f"*🏦 Nigerian Macro — {macro.date.strftime('%b %Y')}*\n\n"
-                    f"CBN MPR: `{float(macro.mpr):.2f}%`\n"
-                    f"Inflation: `{float(inflation.headline_cpi):.2f}%`\n"
-                    f"USD/NGN (official): `₦{float(macro.usd_ngn_official):,.0f}`\n"
-                    f"USD/NGN (parallel): `₦{float(macro.usd_ngn_parallel):,.0f}`\n"
-                    f"91-day T-bill: `{float(macro.treasury_bill_91d):.2f}%`\n"
-                    f"Brent crude: `${float(macro.brent_crude_usd):.0f}`"
+                await _tg_send(chat_id,
+                    f"Nigerian Macro - {macro.date.strftime('%b %Y')}\n\n"
+                    f"CBN MPR: {float(macro.mpr):.2f}%\n"
+                    f"Inflation: {float(inflation.headline_cpi):.2f}%\n"
+                    f"Food Inflation: {float(inflation.food_inflation):.2f}%\n"
+                    f"USD/NGN Official: N{float(macro.usd_ngn_official):,.0f}\n"
+                    f"USD/NGN Parallel: N{float(macro.usd_ngn_parallel):,.0f}\n"
+                    f"91-day T-bill: {float(macro.treasury_bill_91d):.2f}%\n"
+                    f"Brent crude: ${float(macro.brent_crude_usd):.0f}"
                 )
                 return {"ok": True}
-        except Exception:
-            pass
+            await _tg_send(chat_id, "Macro data not available yet.")
+        except Exception as e:
+            await _tg_send(chat_id, f"Error fetching macro data: {str(e)[:200]}")
+        return {"ok": True}
 
-    # All other messages → Claude analysis
+    # All other messages -> Claude
     try:
         client = get_client()
         response = client.messages.create(
@@ -451,11 +460,33 @@ async def telegram_webhook(request: Request):
             messages=[{"role": "user", "content": text}],
         )
         reply = response.content[0].text[:3800]
-        await send(reply)
+        await _tg_send(chat_id, reply)
     except Exception as e:
-        await send(f"⚠️ Analysis unavailable: {str(e)[:200]}")
+        await _tg_send(chat_id, f"Analysis unavailable: {str(e)[:200]}")
 
     return {"ok": True}
+
+
+@app.get("/telegram-webhook/debug")
+async def telegram_debug():
+    """Diagnose bot token, getMe, and webhook info."""
+    import httpx
+    token = TELEGRAM_BOT_TOKEN
+    masked = f"{token[:8]}...{token[-4:]}" if len(token) > 12 else "NOT SET"
+    results = {"token_set": bool(token), "token_preview": masked, "token_length": len(token)}
+    async with httpx.AsyncClient(timeout=10) as client:
+        me = await client.get(f"{TELEGRAM_API}/getMe")
+        results["getMe"] = me.json()
+        wi = await client.get(f"{TELEGRAM_API}/getWebhookInfo")
+        results["webhook_info"] = wi.json()
+    return results
+
+
+@app.get("/telegram-webhook/send-test")
+async def send_test(chat_id: int, message: str = "Bot is working!"):
+    """Send a test message to a specific chat_id to confirm send works."""
+    result = await _tg_send(chat_id, message)
+    return {"sent_to": chat_id, "telegram_response": result}
 
 
 @app.get("/telegram-webhook/register")
