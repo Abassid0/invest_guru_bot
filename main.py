@@ -67,7 +67,15 @@ if not DATABASE_URL:
 
 # Initialize database connection
 engine = create_database_engine(DATABASE_URL)
-calculator = InflationCalculator(DATABASE_URL)
+
+# Lazy — InflationCalculator holds a persistent session; defer until first use
+_calculator = None
+
+def get_calculator():
+    global _calculator
+    if _calculator is None:
+        _calculator = InflationCalculator(DATABASE_URL)
+    return _calculator
 
 
 # ==================== PYDANTIC MODELS ====================
@@ -255,7 +263,7 @@ async def get_stock_detail(ticker: str):
 async def get_inflation_beaters(min_excess: float = 0.0):
     """Get stocks that beat inflation"""
     try:
-        beaters = calculator.get_inflation_beaters(min_excess_return_3yr=min_excess)
+        beaters = get_calculator().get_inflation_beaters(min_excess_return_3yr=min_excess)
         
         result = []
         session = get_session(engine)
