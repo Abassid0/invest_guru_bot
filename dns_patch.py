@@ -39,4 +39,7 @@ def apply():
         socket.getaddrinfo = _patched_getaddrinfo
 
 
-apply()
+import sys as _sys, os as _os
+# Only patch on Windows — Linux servers (Railway, etc.) have working system DNS
+if _sys.platform == "win32" and not _os.getenv("RAILWAY_SERVICE_ID"):
+    apply()

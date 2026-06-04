@@ -309,13 +309,15 @@ def create_database_engine(database_url: str):
         raise ValueError("DATABASE_URL is not set. Add it to Railway environment variables.")
     if database_url.startswith("sqlite"):
         return create_engine(database_url, echo=False, connect_args={"check_same_thread": False})
+    # pg8000 doesn't support pool_pre_ping the same way; use basic args for it
+    is_pg8000 = "pg8000" in database_url
     return create_engine(
         database_url,
         echo=False,
         pool_size=3,
         max_overflow=5,
         pool_timeout=30,
-        pool_pre_ping=True,
+        pool_pre_ping=not is_pg8000,
     )
 
 
