@@ -501,6 +501,11 @@ async def telegram_webhook(request: Request):
         "/portfolio GTCO DANGCEM - diversification\n"
         "/global EVENT - geopolitical impact on NGX\n"
         "/dividend - best yield plays\n\n"
+        "BACKTESTING\n"
+        "/backtest - test inflation strategy (3 years)\n"
+        "/backtest 5years - test last 5 years\n"
+        "/backtest hold GTCO DANGCEM - buy-and-hold test\n"
+        "/backtest compare - compare all strategies\n\n"
         "Or just type any investment question!"
     )
 
@@ -534,6 +539,88 @@ async def telegram_webhook(request: Request):
             await _tg_send(chat_id, f"Error: {str(e)[:200]}")
         return {"ok": True}
 
+    # /backtest — run historical strategy test via internal API
+    if text.startswith("/backtest"):
+        import httpx as _httpx
+        args = text[len("/backtest"):].strip().lower()
+        base_url = f"https://{os.getenv('WEBHOOK_URL', '').strip()}"
+
+        try:
+            async with _httpx.AsyncClient(timeout=60) as client:
+
+                # /backtest compare
+                if args == "compare":
+                    r = await client.get(f"{base_url}/api/backtest/compare")
+                    data = r.json()
+                    lines = ["Strategy Comparison\n"]
+                    for key, strategy in data.items():
+                        if key == "comparison_summary" or "metrics" not in strategy:
+                            continue
+                        m = strategy["metrics"]
+                        lines.append(
+                            f"{strategy.get('strategy_name', key)}\n"
+                            f"  Total Return: {m.get('total_return', 0):.1f}%\n"
+                            f"  Annual Return: {m.get('annual_return', 0):.1f}%\n"
+                            f"  Sharpe Ratio: {m.get('sharpe_ratio', 0):.2f}\n"
+                            f"  Max Drawdown: {m.get('max_drawdown', 0):.1f}%\n"
+                        )
+                    await _tg_send(chat_id, "\n".join(lines))
+                    return {"ok": True}
+
+                # /backtest hold GTCO DANGCEM ...
+                if args.startswith("hold"):
+                    tickers = [t.strip().upper() for t in args[4:].split() if t.strip()]
+                    if not tickers:
+                        await _tg_send(chat_id, "Usage: /backtest hold GTCO DANGCEM ZENITHBANK")
+                        return {"ok": True}
+                    r = await client.post(f"{base_url}/api/backtest/buy-hold", json={
+                        "tickers": tickers,
+                        "initial_capital": 1_000_000,
+                    })
+                    result = r.json()
+
+                # /backtest 5years  or  /backtest YYYY-MM-DD YYYY-MM-DD  or just /backtest
+                else:
+                    payload = {"initial_capital": 1_000_000}
+                    if args == "5years":
+                        from datetime import timedelta
+                        start = (datetime.now() - timedelta(days=365 * 5)).strftime("%Y-%m-%d")
+                        payload["start_date"] = start
+                    elif len(args.split()) == 2:
+                        parts = args.split()
+                        payload["start_date"] = parts[0]
+                        payload["end_date"] = parts[1]
+                    # else default 3-year window
+                    r = await client.post(f"{base_url}/api/backtest/inflation-strategy", json=payload)
+                    result = r.json()
+
+                if "metrics" in result:
+                    m = result["metrics"]
+                    name = result.get("strategy_name", "Backtest")
+                    period = result.get("period", {})
+                    msg = (
+                        f"Backtest: {name}\n"
+                        f"Period: {period.get('start', '')[:7]} to {period.get('end', '')[:7]}\n\n"
+                        f"Total Return:   {m.get('total_return', 0):+.1f}%\n"
+                        f"Annual Return:  {m.get('annual_return', 0):+.1f}%\n"
+                        f"Sharpe Ratio:   {m.get('sharpe_ratio', 0):.2f}\n"
+                        f"Max Drawdown:   {m.get('max_drawdown', 0):.1f}%\n"
+                        f"Win Rate:       {m.get('win_rate', 0):.0f}%\n"
+                        f"Total Trades:   {m.get('num_trades', 0)}\n"
+                        f"Final Value:    N{m.get('final_value', 0):,.0f}\n"
+                        f"P&L:            N{m.get('total_profit_loss', 0):+,.0f}\n\n"
+                        f"(Started with N1,000,000)\n"
+                        f"Type /backtest compare to see how this compares to buy-and-hold."
+                    )
+                    await _tg_send(chat_id, msg)
+                elif "error" in result:
+                    await _tg_send(chat_id, f"Backtest: {result['error']}\n\nNote: backtesting requires historical price data. Try /analyse TICKER for live analysis.")
+                else:
+                    await _tg_send(chat_id, "Backtest returned no results. Try /analyse TICKER for live stock analysis instead.")
+        except Exception as e:
+            await _tg_send(chat_id, f"Backtest error: {str(e)[:200]}")
+        return {"ok": True}
+
     # Build a focused prompt for structured commands
     COMMAND_PROMPTS = {
         "/analyse":      "Provide a concise market and sector analysis for NGX stock: {arg}",
@@ -555,6 +642,7 @@ async def telegram_webhook(request: Request):
         "/dividend":     "List the best dividend yield plays on NGX including mutual funds.",
         "/portfolio":    "Provide portfolio diversification advice for these NGX tickers: {arg}",
         "/global":       "Analyse the geopolitical/global event impact on Nigerian markets: {arg}",
+        "/backtest":     "Explain what backtesting an investment strategy means and how to use /backtest commands on this bot.",
     }
 
     claude_prompt = text

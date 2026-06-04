@@ -237,7 +237,75 @@ How does a drop in oil prices affect Nigerian bank stocks?
 
 ---
 
-### Scenario 10: "I Want to Know If a Stock Is Financially Healthy"
+### Scenario 10: "I Want to Test If a Strategy Would Have Made Money in the Past"
+
+**You're thinking:** *Before I invest real money, I want to see how a strategy would have performed historically. If I had bought inflation-beating stocks every quarter for 3 years, how much would I have made?*
+
+This is called **backtesting** — running your strategy against historical data to see how it would have performed.
+
+**Test the inflation-beating strategy (default — last 3 years):**
+```
+/backtest
+```
+
+**What you'll get:**
+```
+Backtest: Inflation Beater Strategy
+Period: Jun 2023 — Jun 2026 (3 years)
+
+Total Return:     +58.3%
+Annual Return:    +16.8%
+Sharpe Ratio:     1.52  (good risk-adjusted return)
+Max Drawdown:     -22.1% (worst loss from peak)
+Win Rate:         65%   (most trades profitable)
+Final Value:      N1,583,000 (started with N1,000,000)
+Total Trades:     120
+```
+
+**Test with custom settings:**
+```
+/backtest 5years
+```
+→ Tests the last 5 years instead of 3
+
+```
+/backtest 2021-01-01 2024-01-01
+```
+→ Tests a specific date range (bull market, bear market, etc.)
+
+**Test holding specific stocks (buy-and-hold):**
+```
+/backtest hold GTCO DANGCEM ZENITHBANK
+```
+→ Shows how ₦1,000,000 split equally across these 3 stocks would have performed
+
+**Compare both strategies:**
+```
+/backtest compare
+```
+→ Shows inflation-beater strategy vs buy-and-hold side by side
+
+**Understanding your results:**
+
+| Metric | What it means | Good value |
+|--------|--------------|-----------|
+| Total Return | Overall profit/loss % | Above 30% for 3 years |
+| Annual Return | Yearly average return | Above 15% (beats inflation) |
+| Sharpe Ratio | Return vs risk taken | Above 1.0 |
+| Max Drawdown | Worst loss you'd experience | Better than -30% |
+| Win Rate | % of trades that were profitable | Above 55% |
+
+**Real scenario example:**
+> "Before I invest my ₦2 million in NGX stocks, I want to see how the inflation-beating strategy would have done over the last 5 years."
+
+```
+/backtest 5years
+```
+The bot fetches historical data, simulates quarterly rebalancing, and shows you exactly how ₦1,000,000 would have grown.
+
+---
+
+### Scenario 11: "I Want to Know If a Stock Is Financially Healthy"
 
 **You're thinking:** *Before I invest my money, I want to make sure the company is not hiding problems in its accounts. Is this company really profitable?*
 
@@ -283,6 +351,13 @@ MACRO & ECONOMY
 /dividend           — Best stocks for dividend income
 /global EVENT       — How news affects NGX
 /portfolio TICKERS  — Is my portfolio balanced?
+
+BACKTESTING (Test strategies on historical data)
+/backtest           — Test inflation-beating strategy (last 3 years)
+/backtest 5years    — Test the last 5 years
+/backtest YYYY-MM-DD YYYY-MM-DD  — Test a custom date range
+/backtest hold TICKER1 TICKER2   — Test buy-and-hold specific stocks
+/backtest compare   — Compare inflation strategy vs buy-and-hold
 ```
 
 **Replace TICKER** with the stock code. Examples:
