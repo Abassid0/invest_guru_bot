@@ -6,9 +6,10 @@ import sys
 import os
 from pathlib import Path
 
-# Patch DNS before any network calls (falls back to 8.8.8.8 when router DNS fails)
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import dns_patch  # noqa: F401
+# DNS patch: only on Windows local dev where router DNS fails for Supabase subdomains
+if sys.platform == "win32":
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import dns_patch  # noqa: F401
 
 from fastapi import Query
 
