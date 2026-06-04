@@ -362,11 +362,27 @@ async def search_stocks(q: str):
         session.close()
 
 
+@app.get("/api/sync/key-check")
+async def sync_key_check(admin_key: str = Query(...)):
+    """Debug: shows whether the provided key matches. Safe — never reveals the actual key."""
+    valid_key = (os.getenv("SYNC_KEY") or os.getenv("ADMIN_PASSWORD") or "").strip()
+    received_len = len(admin_key)
+    stored_len = len(valid_key)
+    match = admin_key == valid_key
+    return {
+        "match": match,
+        "received_length": received_len,
+        "stored_length": stored_len,
+        "sync_key_set": bool(os.getenv("SYNC_KEY")),
+        "admin_password_set": bool(os.getenv("ADMIN_PASSWORD")),
+    }
+
+
 @app.post("/api/sync")
 async def trigger_sync(admin_key: str = Query(...)):
     """Trigger a full data sync. Requires SYNC_KEY env var (or ADMIN_PASSWORD fallback)."""
-    valid_key = os.getenv("SYNC_KEY") or os.getenv("ADMIN_PASSWORD", "")
-    if admin_key != valid_key.strip():
+    valid_key = (os.getenv("SYNC_KEY") or os.getenv("ADMIN_PASSWORD") or "").strip()
+    if admin_key != valid_key:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     from data_sync import run_full_sync
     result = run_full_sync()
