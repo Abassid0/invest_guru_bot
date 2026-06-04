@@ -425,20 +425,40 @@ async def telegram_webhook(request: Request):
     if not text:
         return {"ok": True}
 
-    # /start
-    if text.startswith("/start"):
-        await _tg_send(chat_id,
-            f"Welcome {user_name} to NGX Investment Intelligence Bot!\n\n"
-            "I provide institutional-grade analysis for the Nigerian Stock Exchange.\n\n"
-            "Commands:\n"
-            "/analyse GTCO - full stock analysis\n"
-            "/macro - CBN rates, inflation, FX\n"
-            "/backtest - strategy backtesting\n\n"
-            "Or just type any Nigerian investment question!"
-        )
+    HELP = (
+        "NGX Investment Intelligence Bot - @Naija_Guru_Bot\n\n"
+        "EQUITIES\n"
+        "/analyse TICKER - market & sector analysis\n"
+        "/technical TICKER - chart signals (entry, SL, TP)\n"
+        "/fullanalysis TICKER - full institutional report\n"
+        "/financials TICKER - 5yr forensic breakdown\n"
+        "/moat TICKER - competitive moat score\n"
+        "/value TICKER - valuation + price target\n"
+        "/risk TICKER - risk matrix + stop-loss\n"
+        "/growth TICKER - growth scenarios\n"
+        "/institutional TICKER - hedge fund view\n"
+        "/debate TICKER - bull vs bear verdict\n"
+        "/earnings TICKER - earnings scorecard\n"
+        "/sentiment TICKER - bullish/bearish gauge\n\n"
+        "FIXED INCOME & FUNDS\n"
+        "/tbills - NTB & OMO auction rates\n"
+        "/bonds - FGN Bond yield curve\n"
+        "/funds - mutual fund NAV comparison\n"
+        "/compare - fixed income vs equities\n\n"
+        "MACRO & PORTFOLIO\n"
+        "/macro - CBN, inflation, FX rates\n"
+        "/portfolio GTCO DANGCEM - diversification\n"
+        "/global EVENT - geopolitical impact on NGX\n"
+        "/dividend - best yield plays\n\n"
+        "Or just type any investment question!"
+    )
+
+    # /start  /help
+    if text.startswith("/start") or text.startswith("/help"):
+        await _tg_send(chat_id, f"Welcome {user_name}!\n\n" + HELP)
         return {"ok": True}
 
-    # /macro
+    # /macro — served directly from DB, no Claude needed
     if text.startswith("/macro"):
         try:
             session = get_session(engine)
@@ -449,27 +469,58 @@ async def telegram_webhook(request: Request):
                 await _tg_send(chat_id,
                     f"Nigerian Macro - {macro.date.strftime('%b %Y')}\n\n"
                     f"CBN MPR: {float(macro.mpr):.2f}%\n"
-                    f"Inflation: {float(inflation.headline_cpi):.2f}%\n"
+                    f"Inflation (headline): {float(inflation.headline_cpi):.2f}%\n"
                     f"Food Inflation: {float(inflation.food_inflation):.2f}%\n"
                     f"USD/NGN Official: N{float(macro.usd_ngn_official):,.0f}\n"
                     f"USD/NGN Parallel: N{float(macro.usd_ngn_parallel):,.0f}\n"
                     f"91-day T-bill: {float(macro.treasury_bill_91d):.2f}%\n"
-                    f"Brent crude: ${float(macro.brent_crude_usd):.0f}"
+                    f"Brent Crude: ${float(macro.brent_crude_usd):.0f}\n\n"
+                    "Use /compare to see how T-bills stack up vs equities."
                 )
                 return {"ok": True}
-            await _tg_send(chat_id, "Macro data not available yet.")
+            await _tg_send(chat_id, "Macro data not seeded yet. Contact admin.")
         except Exception as e:
-            await _tg_send(chat_id, f"Error fetching macro data: {str(e)[:200]}")
+            await _tg_send(chat_id, f"Error: {str(e)[:200]}")
         return {"ok": True}
 
-    # All other messages -> Claude
+    # Build a focused prompt for structured commands
+    COMMAND_PROMPTS = {
+        "/analyse":      "Provide a concise market and sector analysis for NGX stock: {arg}",
+        "/technical":    "Provide technical analysis with entry price, stop-loss, and take-profit targets for NGX stock: {arg}",
+        "/fullanalysis": "Provide a full institutional-grade investment report for NGX stock: {arg}",
+        "/financials":   "Provide a 5-year forensic financial breakdown for NGX stock: {arg}",
+        "/moat":         "Assess the competitive moat score and durability for NGX stock: {arg}",
+        "/value":        "Provide DCF valuation and naira price target for NGX stock: {arg}",
+        "/risk":         "Provide a risk matrix and stop-loss table for NGX stock: {arg}",
+        "/growth":       "Provide bull, base, and bear growth scenarios for NGX stock: {arg}",
+        "/institutional":"Give an institutional/hedge fund perspective on NGX stock: {arg}",
+        "/debate":       "Provide a structured bull vs bear debate verdict for NGX stock: {arg}",
+        "/earnings":     "Provide an earnings scorecard and EPS analysis for NGX stock: {arg}",
+        "/sentiment":    "Provide bullish/bearish sentiment gauge for NGX stock: {arg}",
+        "/tbills":       "Summarise current NTB and OMO auction rates in Nigeria.",
+        "/bonds":        "Summarise the current FGN Bond yield curve.",
+        "/funds":        "Compare top Nigerian mutual fund NAVs and returns.",
+        "/compare":      "Compare Nigerian fixed income (T-bills, bonds) vs NGX equities now.",
+        "/dividend":     "List the best dividend yield plays on NGX including mutual funds.",
+        "/portfolio":    "Provide portfolio diversification advice for these NGX tickers: {arg}",
+        "/global":       "Analyse the geopolitical/global event impact on Nigerian markets: {arg}",
+    }
+
+    claude_prompt = text
+    for cmd, template in COMMAND_PROMPTS.items():
+        if text.lower().startswith(cmd):
+            arg = text[len(cmd):].strip().upper() or "NGX market"
+            claude_prompt = template.format(arg=arg)
+            break
+
+    # All commands and free-text -> Claude
     try:
         client = get_client()
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1500,
             system=NGX_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": text}],
+            messages=[{"role": "user", "content": claude_prompt}],
         )
         reply = response.content[0].text[:3800]
         await _tg_send(chat_id, reply)
