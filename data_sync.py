@@ -12,6 +12,8 @@ Data sources:
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
+if sys.platform == "win32":
+    import dns_patch  # noqa: F401  — local DNS workaround
 
 from datetime import date, datetime
 from decimal import Decimal

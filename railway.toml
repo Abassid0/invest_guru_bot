@@ -4,3 +4,8 @@ healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
+
+[[crons]]
+name = "daily-data-sync"
+schedule = "0 16 * * 1-5"
+command = "python data_sync.py"
