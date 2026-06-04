@@ -17,7 +17,7 @@ from fastapi import Query
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
@@ -374,6 +374,113 @@ async def email_signup(signup: EmailSignup):
         "status": "success",
         "message": f"Successfully subscribed {signup.email} to {signup.frequency} updates"
     }
+
+
+# ==================== TELEGRAM WEBHOOK ====================
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+@app.post("/telegram-webhook")
+async def telegram_webhook(request: Request):
+    """Receive Telegram updates and respond using Claude."""
+    import httpx
+    from claude_client import get_client, NGX_SYSTEM_PROMPT
+
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False}
+
+    message = data.get("message") or data.get("edited_message")
+    if not message:
+        return {"ok": True}
+
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "").strip()
+    user_name = message.get("from", {}).get("first_name", "Investor")
+
+    async def send(msg: str):
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"},
+            )
+
+    if not text:
+        return {"ok": True}
+
+    if text.startswith("/start"):
+        await send(
+            f"👋 *Welcome {user_name} to NGX Investment Intelligence Bot!*\n\n"
+            "I provide institutional-grade analysis for the Nigerian Stock Exchange.\n\n"
+            "*Commands:*\n"
+            "/analyse GTCO — stock analysis\n"
+            "/macro — CBN rates, inflation, FX\n"
+            "/backtest — strategy backtesting\n\n"
+            "Or just ask me anything about Nigerian investments!"
+        )
+        return {"ok": True}
+
+    if text.startswith("/macro"):
+        try:
+            session = get_session(engine)
+            macro = session.query(MacroIndicator).order_by(MacroIndicator.date.desc()).first()
+            inflation = session.query(InflationData).order_by(InflationData.date.desc()).first()
+            session.close()
+            if macro and inflation:
+                await send(
+                    f"*🏦 Nigerian Macro — {macro.date.strftime('%b %Y')}*\n\n"
+                    f"CBN MPR: `{float(macro.mpr):.2f}%`\n"
+                    f"Inflation: `{float(inflation.headline_cpi):.2f}%`\n"
+                    f"USD/NGN (official): `₦{float(macro.usd_ngn_official):,.0f}`\n"
+                    f"USD/NGN (parallel): `₦{float(macro.usd_ngn_parallel):,.0f}`\n"
+                    f"91-day T-bill: `{float(macro.treasury_bill_91d):.2f}%`\n"
+                    f"Brent crude: `${float(macro.brent_crude_usd):.0f}`"
+                )
+                return {"ok": True}
+        except Exception:
+            pass
+
+    # All other messages → Claude analysis
+    try:
+        client = get_client()
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1500,
+            system=NGX_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": text}],
+        )
+        reply = response.content[0].text[:3800]
+        await send(reply)
+    except Exception as e:
+        await send(f"⚠️ Analysis unavailable: {str(e)[:200]}")
+
+    return {"ok": True}
+
+
+@app.get("/telegram-webhook/register")
+async def register_webhook():
+    """Register the webhook URL with Telegram. Call once after deploy."""
+    import httpx
+    webhook_url = f"https://{os.getenv('WEBHOOK_URL', '').strip()}/telegram-webhook"
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook",
+            json={"url": webhook_url, "allowed_updates": ["message", "edited_message"]},
+        )
+    result = r.json()
+    return {"webhook_url": webhook_url, "telegram_response": result}
+
+
+@app.get("/telegram-webhook/info")
+async def webhook_info():
+    """Check current webhook registration status."""
+    import httpx
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getWebhookInfo"
+        )
+    return r.json()
 
 
 # ==================== DASHBOARD ====================

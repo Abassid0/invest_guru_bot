@@ -12,3 +12,5 @@ pandas
 numpy
 loguru
 dnspython
+httpx
+anthropic
