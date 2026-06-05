@@ -383,6 +383,141 @@ async def sync_key_check(admin_key: str = Query(...)):
 PAYSTACK_SECRET = (os.getenv("PAYSTACK_SECRET_KEY") or "").strip()
 
 
+@app.get("/payment-success", response_class=HTMLResponse)
+async def payment_success(reference: str = "", trxref: str = ""):
+    """
+    Paystack redirects here after successful payment.
+    Verifies the transaction, credits the user, and renders a receipt.
+    """
+    import httpx
+    from database.bot_db import add_credits, get_credit_balance, PLANS
+
+    ref = reference or trxref
+    if not ref:
+        return HTMLResponse("<h2>Invalid payment reference.</h2>", status_code=400)
+
+    # Verify with Paystack
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"https://api.paystack.co/transaction/verify/{ref}",
+                headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"},
+            )
+        data = r.json()
+    except Exception as e:
+        return HTMLResponse(f"<h2>Verification error: {e}</h2>", status_code=500)
+
+    if not data.get("status") or data["data"].get("status") != "success":
+        reason = data.get("message", "Unverified")
+        return HTMLResponse(
+            f"<h2>Payment could not be verified.</h2><p>{reason}</p>",
+            status_code=400,
+        )
+
+    tx        = data["data"]
+    meta      = tx.get("metadata", {})
+    telegram_id = int(meta.get("telegram_id", 0))
+    plan_key  = meta.get("plan", "per_view")
+    plan      = PLANS.get(plan_key, PLANS["per_view"])
+    amount_ngn = tx["amount"] / 100          # kobo → naira
+    paid_at   = tx.get("paid_at", "")[:10]  # YYYY-MM-DD
+
+    # Credit the user (idempotent — add_credits checks the reference)
+    new_balance = 0
+    if telegram_id:
+        cred_session = get_session(engine)
+        try:
+            add_credits(
+                cred_session, telegram_id,
+                amount=plan["credits"],
+                plan=plan_key,
+                paystack_ref=ref,
+                amount_ngn=amount_ngn,
+            )
+            new_balance = get_credit_balance(cred_session, telegram_id)
+        finally:
+            cred_session.close()
+
+        # Notify on Telegram as well
+        await _tg_send(
+            telegram_id,
+            f"Payment confirmed!\n\n"
+            f"Plan: {plan['name']}\n"
+            f"Credits added: {plan['credits']}\n"
+            f"New balance: {new_balance} credits\n\n"
+            f"Reference: {ref}\n"
+            f"Type any command to start analysing!"
+        )
+
+    # Render receipt HTML
+    receipt_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Payment Receipt — NGX Investment Bot</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: 'Segoe UI', sans-serif; background: #f0f4f8; display: flex;
+           justify-content: center; align-items: center; min-height: 100vh; padding: 1rem; }}
+    .card {{ background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,.1);
+             max-width: 440px; width: 100%; padding: 2rem; }}
+    .badge {{ background: #dcfce7; color: #166534; border-radius: 50px; padding: .5rem 1.2rem;
+              font-weight: 700; font-size: .9rem; display: inline-block; margin-bottom: 1.2rem; }}
+    h1 {{ font-size: 1.5rem; color: #1e293b; margin-bottom: .25rem; }}
+    .sub {{ color: #64748b; font-size: .9rem; margin-bottom: 1.5rem; }}
+    .divider {{ border: none; border-top: 1px solid #e2e8f0; margin: 1.2rem 0; }}
+    .row {{ display: flex; justify-content: space-between; padding: .45rem 0;
+            font-size: .9rem; color: #334155; }}
+    .row .label {{ color: #64748b; }}
+    .row .value {{ font-weight: 600; }}
+    .highlight {{ background: #f8fafc; border-radius: 10px; padding: .9rem 1rem; margin: 1rem 0; }}
+    .credits {{ font-size: 2rem; font-weight: 800; color: #0ea5e9; text-align: center; }}
+    .credits-label {{ text-align: center; color: #64748b; font-size: .85rem; margin-top: .2rem; }}
+    .ref {{ font-size: .75rem; color: #94a3b8; word-break: break-all; margin-top: .5rem; }}
+    .cta {{ display: block; text-align: center; margin-top: 1.5rem; background: #0ea5e9;
+            color: #fff; text-decoration: none; border-radius: 10px; padding: .85rem;
+            font-weight: 700; font-size: 1rem; }}
+    .cta:hover {{ background: #0284c7; }}
+    .footer {{ text-align: center; color: #94a3b8; font-size: .78rem; margin-top: 1rem; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">✓ Payment Successful</div>
+    <h1>NGX Investment Bot</h1>
+    <p class="sub">Official Payment Receipt</p>
+
+    <div class="highlight">
+      <div class="credits">{plan['credits']}</div>
+      <div class="credits-label">Credits Added to Your Account</div>
+    </div>
+
+    <hr class="divider"/>
+
+    <div class="row"><span class="label">Plan</span><span class="value">{plan['name']}</span></div>
+    <div class="row"><span class="label">Amount Paid</span><span class="value">₦{amount_ngn:,.0f}</span></div>
+    <div class="row"><span class="label">Date</span><span class="value">{paid_at}</span></div>
+    <div class="row"><span class="label">Credits Before</span><span class="value">{new_balance - plan['credits']}</span></div>
+    <div class="row"><span class="label">Credits After</span><span class="value">{new_balance}</span></div>
+    <div class="row"><span class="label">Status</span><span class="value" style="color:#16a34a">Confirmed</span></div>
+
+    <p class="ref">Reference: {ref}</p>
+
+    <hr class="divider"/>
+
+    <a class="cta" href="https://t.me/Naija_Guru_Bot">Return to Telegram Bot →</a>
+
+    <p class="footer">
+      NGX Investment Intelligence · @Naija_Guru_Bot<br/>
+      Keep this receipt for your records.
+    </p>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=receipt_html)
+
+
 @app.get("/api/payment/test")
 async def test_paystack():
     """Test Paystack API key and create a ₦100 test link."""
