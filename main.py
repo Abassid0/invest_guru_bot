@@ -383,6 +383,22 @@ async def sync_key_check(admin_key: str = Query(...)):
 PAYSTACK_SECRET = (os.getenv("PAYSTACK_SECRET_KEY") or "").strip()
 
 
+@app.get("/api/payment/test")
+async def test_paystack():
+    """Test Paystack API key and create a ₦100 test link."""
+    import httpx
+    secret = PAYSTACK_SECRET
+    if not secret:
+        return {"error": "PAYSTACK_SECRET_KEY not set in Railway env vars"}
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            "https://api.paystack.co/transaction/initialize",
+            headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+            json={"email": "test@ngxbot.app", "amount": 10000, "currency": "NGN"},
+        )
+    return {"http_status": r.status_code, "paystack_response": r.json(), "secret_preview": f"{secret[:8]}...{secret[-4:]}"}
+
+
 @app.post("/api/payment/webhook")
 async def paystack_webhook(request: Request):
     """Receive payment confirmation from Paystack and credit the user."""
@@ -624,35 +640,60 @@ async def telegram_webhook(request: Request):
 
         if chosen_plan and chosen_plan in PLANS:
             plan = PLANS[chosen_plan]
-            # Create Paystack payment link
             try:
+                secret = PAYSTACK_SECRET
+                if not secret:
+                    await _tg_send(chat_id, "Payment not configured yet. Contact admin.")
+                    return {"ok": True}
+
+                # Use username or chat_id as email — Paystack requires a valid-format email
+                email = f"user{chat_id}@ngxbot.app"
+
                 async with _hx.AsyncClient(timeout=15) as client:
                     r = await client.post(
                         "https://api.paystack.co/transaction/initialize",
-                        headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"},
+                        headers={
+                            "Authorization": f"Bearer {secret}",
+                            "Content-Type": "application/json",
+                        },
                         json={
-                            "email": f"{chat_id}@ngxbot.telegram",
+                            "email": email,
                             "amount": plan["price_kobo"],
+                            "currency": "NGN",
                             "metadata": {
-                                "telegram_id": chat_id,
+                                "telegram_id": str(chat_id),
                                 "plan": chosen_plan,
-                                "username": username,
+                                "username": username or str(chat_id),
+                                "custom_fields": [
+                                    {"display_name": "Plan", "variable_name": "plan", "value": plan["name"]},
+                                    {"display_name": "Telegram ID", "variable_name": "telegram_id", "value": str(chat_id)},
+                                ]
                             },
                             "callback_url": f"https://{os.getenv('WEBHOOK_URL', '').strip()}/payment-success",
                         }
                     )
+
                 resp = r.json()
-                if resp.get("status"):
+                if resp.get("status") and resp.get("data", {}).get("authorization_url"):
                     link = resp["data"]["authorization_url"]
                     await _tg_send(chat_id,
-                        f"{plan['name']} — {plan['desc']}\n\n"
-                        f"Click to pay: {link}\n\n"
-                        f"You will receive {plan['credits']} credit(s) instantly after payment."
+                        f"Payment Link Ready!\n\n"
+                        f"Plan: {plan['name']}\n"
+                        f"Amount: N{plan['price_ngn']:,}\n"
+                        f"Credits: {plan['credits']}\n\n"
+                        f"Pay here:\n{link}\n\n"
+                        f"Credits will be added automatically after payment.\n"
+                        f"Link expires in 1 hour."
                     )
                 else:
-                    await _tg_send(chat_id, "Payment link error. Please try again later.")
+                    # Show the actual Paystack error
+                    err_msg = resp.get("message", "Unknown error")
+                    await _tg_send(chat_id,
+                        f"Payment setup failed: {err_msg}\n\n"
+                        f"Please contact support or try again."
+                    )
             except Exception as e:
-                await _tg_send(chat_id, f"Payment error: {str(e)[:100]}")
+                await _tg_send(chat_id, f"Payment error: {str(e)[:150]}")
         else:
             # Show plan menu
             lines = ["Choose a plan:\n"]
