@@ -971,26 +971,26 @@ async def telegram_webhook(request: Request):
 
     # Build a focused prompt for structured commands
     COMMAND_PROMPTS = {
-        "/analyse":      "Provide a concise market and sector analysis for NGX stock: {arg}",
-        "/technical":    "Provide technical analysis with entry price, stop-loss, and take-profit targets for NGX stock: {arg}",
-        "/fullanalysis": "Provide a full institutional-grade investment report for NGX stock: {arg}",
-        "/financials":   "Provide a 5-year forensic financial breakdown for NGX stock: {arg}",
-        "/moat":         "Assess the competitive moat score and durability for NGX stock: {arg}",
-        "/value":        "Provide DCF valuation and naira price target for NGX stock: {arg}",
-        "/risk":         "Provide a risk matrix and stop-loss table for NGX stock: {arg}",
-        "/growth":       "Provide bull, base, and bear growth scenarios for NGX stock: {arg}",
-        "/institutional":"Give an institutional/hedge fund perspective on NGX stock: {arg}",
-        "/debate":       "Provide a structured bull vs bear debate verdict for NGX stock: {arg}",
-        "/earnings":     "Provide an earnings scorecard and EPS analysis for NGX stock: {arg}",
-        "/sentiment":    "Provide bullish/bearish sentiment gauge for NGX stock: {arg}",
-        "/tbills":       "Summarise current NTB and OMO auction rates in Nigeria.",
-        "/bonds":        "Summarise the current FGN Bond yield curve.",
-        "/funds":        "Compare top Nigerian mutual fund NAVs and returns.",
-        "/compare":      "Compare Nigerian fixed income (T-bills, bonds) vs NGX equities now.",
-        "/dividend":     "List the best dividend yield plays on NGX including mutual funds.",
-        "/portfolio":    "Provide portfolio diversification advice for these NGX tickers: {arg}",
-        "/global":       "Analyse the geopolitical/global event impact on Nigerian markets: {arg}",
-        "/backtest":     "Explain what backtesting an investment strategy means and how to use /backtest commands on this bot.",
+        "/analyse":      "In plain simple English for an everyday Nigerian investor, give a SHORT analysis of NGX stock {arg}. Is it a good buy right now? Say BUY, HOLD, or AVOID clearly. 5 bullet points max.",
+        "/technical":    "For NGX stock {arg}, tell me in plain language: what price to buy at, where to put my stop-loss to protect my money, and what profit target to aim for. Use naira amounts. 4 lines max.",
+        "/fullanalysis": "Give a clear summary of NGX stock {arg} — is it worth buying? Cover price, health of the company, and the biggest risk. Plain English, no jargon. 6 bullet points max.",
+        "/financials":   "Is NGX stock {arg} making money or losing it? Is the company's debt dangerous? Answer in plain English with 3-4 simple facts. No accounting terms without explanation.",
+        "/moat":         "Does {arg} have a strong business advantage that competitors cannot easily copy? Explain in plain English with 3 bullet points. Say STRONG, MODERATE, or WEAK moat.",
+        "/value":        "Is NGX stock {arg} cheap or overpriced right now? Give a fair price in naira and say if it is a bargain or not. Plain language. 3 lines max.",
+        "/risk":         "What are the TOP 3 risks of investing in NGX stock {arg}? How bad could it get? What price should I sell at to protect myself? Plain English, practical advice.",
+        "/growth":       "Will NGX stock {arg} grow in the next 1-3 years? Give best case, normal case, and worst case in plain language. 3 bullet points.",
+        "/institutional":"What do big investment firms think about NGX stock {arg} right now? Are they buying or selling? What does that mean for me as a small investor?",
+        "/debate":       "Quick bull vs bear on NGX stock {arg}: give 2 reasons to BUY and 2 reasons to AVOID, then your final verdict in one sentence.",
+        "/earnings":     "How did NGX stock {arg} perform in its latest results? Is profit going up or down? Is this good or bad? Plain English, 4 lines max.",
+        "/sentiment":    "What is the current market mood on NGX stock {arg}? Are people buying or selling? Is now a good time to enter? 3 bullet points, plain language.",
+        "/tbills":       "What are the current Nigerian treasury bill rates? If I put N100,000 in a 91-day T-bill, how much will I earn? Is it better than a savings account? Plain simple answer.",
+        "/bonds":        "What are the current FGN bond rates in Nigeria? Are they worth buying over T-bills? Plain English, 3 bullet points.",
+        "/funds":        "Which Nigerian mutual funds are giving the best returns right now? Name the top 3 and how much they are earning. Plain simple answer.",
+        "/compare":      "Right now in Nigeria, is it better to put my money in stocks or treasury bills? Give a direct answer with the key numbers. Plain language for a non-investor.",
+        "/dividend":     "Which Nigerian stocks pay the most dividend income? Name the top 3-4 with their yield percentage. Explain what dividend yield means in simple terms.",
+        "/portfolio":    "Is this a good mix of stocks: {arg}? Am I taking too much risk? What should I change? Plain English, 4 bullet points.",
+        "/global":       "How does this event affect my NGX investments: {arg}? Which stocks benefit, which suffer? Plain language, practical advice for a Nigerian investor.",
+        "/backtest":     "Explain backtesting in simple terms: what is it, why does it matter, and how do I use it on this bot? 4 bullet points, no jargon.",
     }
 
     claude_prompt = text
@@ -1022,14 +1022,14 @@ async def telegram_webhook(request: Request):
     # All commands and free-text -> Claude with web search for live data
     try:
         from claude_client import run_analysis
-        reply = run_analysis(claude_prompt, max_tokens=1500)
+        reply = run_analysis(claude_prompt, max_tokens=600)
         # Append remaining credit balance
         gate_session2 = get_session(engine)
         try:
             remaining = get_credit_balance(gate_session2, chat_id)
         finally:
             gate_session2.close()
-        await _tg_send(chat_id, reply[:3700] + f"\n\n[{remaining} credit(s) left — /buy to top up]")
+        await _tg_send(chat_id, reply[:1400] + f"\n\n[{remaining} credit(s) left — /buy to top up]")
     except Exception as e:
         # Refund the credit on error
         refund_session = get_session(engine)

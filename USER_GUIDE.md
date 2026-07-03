@@ -414,7 +414,7 @@ Always mention if you're cautious or aggressive:
 ## Frequently Asked Questions
 
 **Q: Is this bot free to use?**
-A: Yes, completely free.
+A: You start with 3 free credits. Each analysis uses 1 credit. Top up anytime with /buy (from ₦100 per analysis) or earn free credits by referring friends with /refer.
 
 **Q: How current is the data?**
 A: The bot searches the internet in real-time when you ask about a specific stock or market event. Macro data (CBN rates, FX, Brent crude) updates daily.
