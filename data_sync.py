@@ -41,74 +41,22 @@ engine = create_database_engine(DATABASE_URL)
 
 def _fetch_ngx_prices() -> dict:
     """
-    Fetch NGX daily closing prices.
-    Tries multiple sources in order:
-      1. NGX Group daily trade summary CSV (direct download)
-      2. Nairametrics market data page (HTML table fallback)
+    Fetch NGX daily closing prices via the official REST API.
     Returns {ticker: {"close": float, "volume": int, "change_pct": float}}
     """
-    import io
-    import csv
-    from bs4 import BeautifulSoup
+    from scrapers.price_scraper import NGXPriceScraper
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    scraper = NGXPriceScraper()
+    prices_list = scraper.fetch_ngx_daily_prices()
+
+    return {
+        p["ticker"]: {
+            "close": float(p["close"]),
+            "volume": p.get("volume") or 0,
+            "change_pct": float(p.get("change_percent") or 0),
+        }
+        for p in prices_list
     }
-
-    # ── Source 1: NGX direct CSV/Excel endpoint ───────────────────────────────
-    # NGX publishes a daily trade report; try the most common URL patterns
-    ngx_csv_urls = [
-        "https://ngxgroup.com/exchange/trade/equities/daily-price-list/",
-        "https://www.ngxgroup.com/market-data/equities-market/daily-price-list/",
-    ]
-    for url in ngx_csv_urls:
-        try:
-            r = requests.get(url, headers=headers, timeout=15)
-            if r.status_code == 200 and "text/csv" in r.headers.get("Content-Type", ""):
-                reader = csv.DictReader(io.StringIO(r.text))
-                prices = {}
-                for row in reader:
-                    ticker = (row.get("Symbol") or row.get("Ticker", "")).upper().strip()
-                    close_str = (row.get("Close") or row.get("Closing Price", "0")).replace(",", "")
-                    if ticker and close_str:
-                        try:
-                            prices[ticker] = {
-                                "close": float(close_str),
-                                "volume": int(float((row.get("Volume", "0") or "0").replace(",", ""))),
-                                "change_pct": float((row.get("Change%", "0") or "0").replace("%", "").replace(",", "") or "0"),
-                            }
-                        except ValueError:
-                            continue
-                if prices:
-                    return prices
-        except Exception:
-            continue
-
-    # ── Source 2: Nairametrics market data (HTML table) ───────────────────────
-    try:
-        r = requests.get(
-            "https://nairametrics.com/market-data/stock-market/",
-            headers=headers, timeout=15
-        )
-        soup = BeautifulSoup(r.text, "html.parser")
-        prices = {}
-        for row in soup.select("table tbody tr"):
-            cols = [c.get_text(strip=True) for c in row.find_all("td")]
-            if len(cols) < 4:
-                continue
-            try:
-                ticker = cols[0].upper().strip()
-                close = float(cols[3].replace(",", ""))
-                change_pct = float(cols[4].replace("%", "").strip()) if len(cols) > 4 else 0.0
-                prices[ticker] = {"close": close, "volume": 0, "change_pct": change_pct}
-            except (ValueError, IndexError):
-                continue
-        if prices:
-            return prices
-    except Exception:
-        pass
-
-    return {}
 
 
 def sync_stock_prices() -> dict:

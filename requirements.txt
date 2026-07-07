@@ -16,4 +16,7 @@ httpx
 anthropic
 yfinance
 beautifulsoup4
+lxml
 pyOpenSSL
+retry
+schedule

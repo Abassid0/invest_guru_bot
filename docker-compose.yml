@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: ngx_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ngx_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ngx_password}
+      POSTGRES_DB: ${POSTGRES_DB:-ngx_data}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ngx_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  scheduler:
+    build: .
+    container_name: ngx_scheduler
+    command: python scheduler.py
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ngx_user}:${POSTGRES_PASSWORD:-ngx_password}@postgres:5432/${POSTGRES_DB:-ngx_data}
+      TZ: UTC
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
