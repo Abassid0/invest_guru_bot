@@ -185,6 +185,8 @@ def sync_brent_crude() -> dict:
 
 def run_full_sync() -> dict:
     """Run all sync tasks and return a summary."""
+    from database.bot_db import expire_old_conversations, log_sync
+
     print(f"[{datetime.now().isoformat()}] Starting full data sync...")
     result = {}
 
@@ -199,6 +201,22 @@ def run_full_sync() -> dict:
     print("  Syncing Brent crude...")
     result["brent"] = sync_brent_crude()
     print(f"  Done: {result['brent']}")
+
+    # Housekeeping
+    print("  Cleaning old conversations...")
+    session = get_session(engine)
+    try:
+        deleted = expire_old_conversations(session, hours=24)
+        result["conversations_cleaned"] = deleted
+        print(f"  Removed {deleted} old conversation rows")
+
+        stocks_result = result.get("stocks", {})
+        log_sync(session, "full_sync", "success",
+                 records_affected=stocks_result.get("added", 0) + stocks_result.get("updated", 0))
+    except Exception as e:
+        print(f"  Housekeeping warning: {e}")
+    finally:
+        session.close()
 
     print(f"[{datetime.now().isoformat()}] Sync complete.")
     return result

@@ -217,3 +217,159 @@ def get_user_stats(session, telegram_id: int) -> dict:
         "total_spent_ngn": total_spent,
         "member_since":   user.created_at.strftime("%b %Y") if user.created_at else "N/A",
     }
+
+
+# ── Conversation history ─────────────────────────────────────────────────────
+
+def save_conversation(session, telegram_id: int, role: str, content: str,
+                      command: str = None):
+    from database.models import ConversationHistory
+    session.add(ConversationHistory(
+        telegram_id=telegram_id,
+        role=role,
+        content=content[:2000],
+        command=command,
+    ))
+    session.commit()
+
+
+def get_conversation_history(session, telegram_id: int, limit: int = 5) -> list:
+    from database.models import ConversationHistory
+    rows = (
+        session.query(ConversationHistory)
+        .filter_by(telegram_id=telegram_id)
+        .order_by(ConversationHistory.created_at.desc())
+        .limit(limit * 2)
+        .all()
+    )
+    rows.reverse()
+    return [{"role": r.role, "content": r.content} for r in rows]
+
+
+def expire_old_conversations(session, hours: int = 24):
+    from database.models import ConversationHistory
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    deleted = session.query(ConversationHistory).filter(
+        ConversationHistory.created_at < cutoff
+    ).delete()
+    session.commit()
+    return deleted
+
+
+# ── Watchlist ─────────────────────────────────────────────────────────────────
+
+def add_watchlist(session, telegram_id: int, ticker: str,
+                  above: float = None, below: float = None):
+    from database.models import Watchlist
+    existing = session.query(Watchlist).filter_by(
+        telegram_id=telegram_id, ticker=ticker.upper()
+    ).first()
+    if existing:
+        existing.alert_price_above = Decimal(str(above)) if above else existing.alert_price_above
+        existing.alert_price_below = Decimal(str(below)) if below else existing.alert_price_below
+        existing.is_active = True
+        existing.triggered_at = None
+    else:
+        session.add(Watchlist(
+            telegram_id=telegram_id,
+            ticker=ticker.upper(),
+            alert_price_above=Decimal(str(above)) if above else None,
+            alert_price_below=Decimal(str(below)) if below else None,
+        ))
+    session.commit()
+
+
+def get_watchlist(session, telegram_id: int) -> list:
+    from database.models import Watchlist
+    rows = session.query(Watchlist).filter_by(
+        telegram_id=telegram_id, is_active=True
+    ).all()
+    return [
+        {
+            "id": r.id,
+            "ticker": r.ticker,
+            "above": float(r.alert_price_above) if r.alert_price_above else None,
+            "below": float(r.alert_price_below) if r.alert_price_below else None,
+        }
+        for r in rows
+    ]
+
+
+def remove_watchlist(session, telegram_id: int, ticker: str) -> bool:
+    from database.models import Watchlist
+    row = session.query(Watchlist).filter_by(
+        telegram_id=telegram_id, ticker=ticker.upper(), is_active=True
+    ).first()
+    if not row:
+        return False
+    row.is_active = False
+    session.commit()
+    return True
+
+
+def check_alerts(session, current_prices: dict) -> list:
+    from database.models import Watchlist
+    active = session.query(Watchlist).filter_by(is_active=True).all()
+    triggered = []
+    for alert in active:
+        price = current_prices.get(alert.ticker)
+        if price is None:
+            continue
+        if alert.alert_price_above and price >= float(alert.alert_price_above):
+            triggered.append({
+                "id": alert.id,
+                "telegram_id": alert.telegram_id,
+                "ticker": alert.ticker,
+                "direction": "above",
+                "threshold": float(alert.alert_price_above),
+                "current_price": price,
+            })
+        elif alert.alert_price_below and price <= float(alert.alert_price_below):
+            triggered.append({
+                "id": alert.id,
+                "telegram_id": alert.telegram_id,
+                "ticker": alert.ticker,
+                "direction": "below",
+                "threshold": float(alert.alert_price_below),
+                "current_price": price,
+            })
+    return triggered
+
+
+def mark_alert_triggered(session, alert_id: int):
+    from database.models import Watchlist
+    row = session.query(Watchlist).filter_by(id=alert_id).first()
+    if row:
+        row.is_active = False
+        row.triggered_at = datetime.utcnow()
+        session.commit()
+
+
+# ── User feedback ─────────────────────────────────────────────────────────────
+
+def save_feedback(session, telegram_id: int, command: str, ticker: str = None,
+                  rating: int = 0, comment: str = None):
+    from database.models import UserFeedback
+    session.add(UserFeedback(
+        telegram_id=telegram_id,
+        command=command,
+        ticker=ticker,
+        rating=max(1, min(5, rating)),
+        comment=comment[:500] if comment else None,
+    ))
+    session.commit()
+
+
+# ── Sync logging ──────────────────────────────────────────────────────────────
+
+def log_sync(session, sync_type: str, status: str, records_affected: int = 0,
+             error_message: str = None):
+    from database.models import SyncLog
+    session.add(SyncLog(
+        sync_type=sync_type,
+        status=status,
+        records_affected=records_affected,
+        error_message=error_message,
+        completed_at=datetime.utcnow() if status != "started" else None,
+    ))
+    session.commit()

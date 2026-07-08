@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>NGX Backtest Dashboard</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    .card { background: #1e293b; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
+    .metric-card { background: linear-gradient(135deg, #1e293b, #334155); border-radius: 12px; padding: 1.2rem; text-align: center; }
+    .metric-value { font-size: 1.8rem; font-weight: 800; }
+    .metric-label { font-size: 0.8rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+    .btn { padding: 0.6rem 1.2rem; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; transition: all 0.2s; }
+    .btn-primary { background: #3b82f6; color: white; }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-outline { background: transparent; border: 1px solid #475569; color: #cbd5e1; }
+    .btn-outline:hover { background: #334155; }
+    .btn-outline.active { background: #3b82f6; border-color: #3b82f6; color: white; }
+    input { background: #334155; border: 1px solid #475569; color: #e2e8f0; padding: 0.6rem; border-radius: 8px; }
+    input:focus { outline: none; border-color: #3b82f6; }
+    .green { color: #4ade80; } .red { color: #f87171; }
+    .bar { height: 8px; border-radius: 4px; background: #334155; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
+    .loader { display: inline-block; width: 20px; height: 20px; border: 2px solid #475569; border-top: 2px solid #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    function MetricCard({ label, value, color }) {
+      return (
+        <div className="metric-card">
+          <div className={`metric-value ${color || ''}`}>{value}</div>
+          <div className="metric-label">{label}</div>
+        </div>
+      );
+    }
+
+    function App() {
+      const [strategy, setStrategy] = useState('inflation');
+      const [capital, setCapital] = useState(1000000);
+      const [tickers, setTickers] = useState('GTCO DANGCEM ZENITHBANK');
+      const [result, setResult] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState(null);
+
+      const baseUrl = window.location.origin;
+
+      const runBacktest = async () => {
+        setLoading(true);
+        setError(null);
+        try {
+          let url, body;
+          if (strategy === 'inflation') {
+            url = `${baseUrl}/api/backtest/inflation-strategy`;
+            body = { initial_capital: capital };
+          } else if (strategy === 'buyhold') {
+            url = `${baseUrl}/api/backtest/buy-hold`;
+            body = { tickers: tickers.split(/[\s,]+/).filter(Boolean), initial_capital: capital };
+          } else if (strategy === 'devaluation') {
+            url = `${baseUrl}/api/backtest/devaluation-strategy`;
+            body = { initial_capital: capital };
+          }
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          setResult(data);
+        } catch (e) {
+          setError(e.message);
+          setResult(null);
+        }
+        setLoading(false);
+      };
+
+      const fmt = (n, dec=1) => n != null ? Number(n).toFixed(dec) : 'N/A';
+      const fmtN = (n) => n != null ? `₦${Number(n).toLocaleString()}` : 'N/A';
+
+      return (
+        <div style={{ maxWidth: 900, margin: '0 auto', padding: '2rem 1rem' }}>
+          <h1 style={{ fontSize: '1.8rem', fontWeight: 800, marginBottom: '0.5rem' }}>
+            NGX Backtest Dashboard
+          </h1>
+          <p style={{ color: '#94a3b8', marginBottom: '2rem' }}>
+            Test investment strategies against historical NGX data
+          </p>
+
+          <div className="card">
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+              {['inflation', 'buyhold', 'devaluation'].map(s => (
+                <button key={s} className={`btn btn-outline ${strategy === s ? 'active' : ''}`}
+                  onClick={() => setStrategy(s)}>
+                  {s === 'inflation' ? 'Inflation Beater' : s === 'buyhold' ? 'Buy & Hold' : 'FX Revenue Filter'}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: strategy === 'buyhold' ? '1fr 1fr' : '1fr', gap: '1rem', marginBottom: '1rem' }}>
+              <div>
+                <label style={{ fontSize: '0.85rem', color: '#94a3b8', display: 'block', marginBottom: '0.3rem' }}>
+                  Initial Capital (₦)
+                </label>
+                <input type="number" value={capital} onChange={e => setCapital(Number(e.target.value))}
+                  style={{ width: '100%' }} />
+              </div>
+              {strategy === 'buyhold' && (
+                <div>
+                  <label style={{ fontSize: '0.85rem', color: '#94a3b8', display: 'block', marginBottom: '0.3rem' }}>
+                    Tickers (space-separated)
+                  </label>
+                  <input value={tickers} onChange={e => setTickers(e.target.value)}
+                    style={{ width: '100%' }} placeholder="GTCO DANGCEM ZENITHBANK" />
+                </div>
+              )}
+            </div>
+
+            <button className="btn btn-primary" onClick={runBacktest} disabled={loading}
+              style={{ width: '100%' }}>
+              {loading ? <><span className="loader" style={{ marginRight: 8 }}></span>Running...</> : 'Run Backtest'}
+            </button>
+          </div>
+
+          {error && (
+            <div className="card" style={{ borderLeft: '3px solid #f87171' }}>
+              <p className="red">{error}</p>
+            </div>
+          )}
+
+          {result && result.metrics && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.8rem', marginBottom: '1rem' }}>
+                <MetricCard label="Total Return"
+                  value={`${fmt(result.metrics.total_return)}%`}
+                  color={result.metrics.total_return >= 0 ? 'green' : 'red'} />
+                <MetricCard label="Annual Return"
+                  value={`${fmt(result.metrics.annual_return)}%`}
+                  color={result.metrics.annual_return >= 0 ? 'green' : 'red'} />
+                <MetricCard label="Sharpe Ratio"
+                  value={fmt(result.metrics.sharpe_ratio, 2)} />
+                <MetricCard label="Max Drawdown"
+                  value={`${fmt(result.metrics.max_drawdown)}%`}
+                  color="red" />
+                <MetricCard label="Win Rate"
+                  value={`${fmt(result.metrics.win_rate, 0)}%`} />
+                <MetricCard label="Final Value"
+                  value={fmtN(result.metrics.final_value)} />
+              </div>
+
+              <div className="card">
+                <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>Strategy Details</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                  <div>
+                    <span style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Strategy</span>
+                    <p>{result.strategy_name}</p>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Period</span>
+                    <p>{result.period?.start?.slice(0,7)} to {result.period?.end?.slice(0,7)}</p>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Total Trades</span>
+                    <p>{result.metrics.num_trades || 0}</p>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94a3b8', fontSize: '0.85rem' }}>P&L</span>
+                    <p className={result.metrics.total_profit_loss >= 0 ? 'green' : 'red'}>
+                      {fmtN(result.metrics.total_profit_loss)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {result.trades && result.trades.length > 0 && (
+                <div className="card" style={{ overflowX: 'auto' }}>
+                  <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>Trade Log</h3>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #334155' }}>
+                        <th style={{ textAlign: 'left', padding: '0.5rem', color: '#94a3b8' }}>Date</th>
+                        <th style={{ textAlign: 'left', padding: '0.5rem', color: '#94a3b8' }}>Ticker</th>
+                        <th style={{ textAlign: 'left', padding: '0.5rem', color: '#94a3b8' }}>Action</th>
+                        <th style={{ textAlign: 'right', padding: '0.5rem', color: '#94a3b8' }}>Price</th>
+                        <th style={{ textAlign: 'right', padding: '0.5rem', color: '#94a3b8' }}>Shares</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {result.trades.slice(0, 20).map((t, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                          <td style={{ padding: '0.5rem' }}>{t.date?.slice(0, 10)}</td>
+                          <td style={{ padding: '0.5rem' }}>{t.ticker}</td>
+                          <td style={{ padding: '0.5rem' }}>
+                            <span style={{ color: t.action === 'BUY' ? '#4ade80' : '#f87171' }}>{t.action}</span>
+                          </td>
+                          <td style={{ padding: '0.5rem', textAlign: 'right' }}>₦{Number(t.price).toFixed(2)}</td>
+                          <td style={{ padding: '0.5rem', textAlign: 'right' }}>{t.shares}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {result.trades.length > 20 && (
+                    <p style={{ color: '#94a3b8', fontSize: '0.8rem', marginTop: '0.5rem' }}>
+                      Showing 20 of {result.trades.length} trades
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          <p style={{ textAlign: 'center', color: '#475569', fontSize: '0.75rem', marginTop: '2rem' }}>
+            NGX Investment Intelligence Bot &middot; @Naija_Guru_Bot
+          </p>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

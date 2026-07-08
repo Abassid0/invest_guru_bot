@@ -225,6 +225,82 @@ class NGXBacktestEngine:
 
         return results
 
+    def backtest_devaluation_strategy(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        initial_capital: float = 1_000_000,
+        portfolio_size: int = 10,
+        rebalance_frequency: str = "quarterly",
+    ) -> Dict:
+        """
+        Backtest FX Revenue Filter strategy — invest in companies that earn
+        foreign currency (natural naira hedge). Scores stocks by:
+        - has_fx_revenue flag (weight 3)
+        - Sector is Oil & Gas / Telecoms / Agriculture (weight 1)
+        Rebalances into top-N scored stocks.
+        """
+        self.session = get_session(self.engine)
+
+        try:
+            price_data = self._get_price_data(start_date, end_date)
+            if price_data.empty:
+                return {"error": "No price data available for period"}
+
+            fx_tickers = self._get_fx_revenue_stocks()
+            if not fx_tickers:
+                return {"error": "No FX-revenue stocks found in database"}
+
+            selected_tickers = fx_tickers[:portfolio_size]
+            weights = {t: 1 / len(selected_tickers) for t in selected_tickers}
+
+            filtered_data = price_data[price_data["ticker"].isin(selected_tickers)]
+            if filtered_data.empty:
+                return {"error": "No price data for FX-revenue stocks"}
+
+            portfolio_values, trades, dates = self._simulate_buy_and_hold(
+                filtered_data, start_date, end_date, initial_capital, weights
+            )
+
+            metrics = self._calculate_metrics(
+                portfolio_values, trades, initial_capital, start_date, end_date
+            )
+
+            return {
+                "status": "success",
+                "strategy_name": "FX Revenue Filter (Naira Hedge)",
+                "tickers": selected_tickers,
+                "period": {
+                    "start": start_date.isoformat(),
+                    "end": end_date.isoformat(),
+                    "days": (end_date - start_date).days,
+                },
+                "metrics": metrics,
+                "portfolio_values": portfolio_values,
+                "trades": trades,
+                "dates": dates,
+            }
+        finally:
+            self.session.close()
+
+    def _get_fx_revenue_stocks(self) -> List[str]:
+        """Return tickers scored by FX revenue exposure, highest first."""
+        FX_SECTORS = {"Oil & Gas", "Telecoms", "Agriculture"}
+
+        companies = self.session.query(Company).filter_by(is_active=True).all()
+        scored = []
+        for c in companies:
+            score = 0
+            if c.has_fx_revenue:
+                score += 3
+            if c.sector in FX_SECTORS:
+                score += 1
+            if score > 0:
+                scored.append((c.ticker, score))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [t for t, _ in scored]
+
     # ==================== PRIVATE METHODS ====================
 
     def _get_price_data(self, start_date: datetime, end_date: datetime) -> pd.DataFrame:

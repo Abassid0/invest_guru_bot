@@ -126,6 +126,31 @@ async def compare_strategies(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class BacktestDevaluationRequest(BaseModel):
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    initial_capital: float = 1_000_000
+    portfolio_size: int = 10
+
+
+@router.post("/devaluation-strategy")
+async def backtest_devaluation(request: BacktestDevaluationRequest):
+    """Backtest FX Revenue Filter strategy — stocks that hedge naira devaluation"""
+    try:
+        start_dt, end_dt = _parse_dates(request.start_date, request.end_date)
+        result = get_engine().backtest_devaluation_strategy(
+            start_date=start_dt,
+            end_date=end_dt,
+            initial_capital=request.initial_capital,
+            portfolio_size=request.portfolio_size,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/metrics-explanation")
 async def metrics_explanation():
     """Explain what each backtest metric means"""

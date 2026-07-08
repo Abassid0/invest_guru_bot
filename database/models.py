@@ -6,8 +6,8 @@ from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float, Date, 
-    DateTime, Boolean, Text, ForeignKey, Numeric, Index
+    create_engine, Column, Integer, BigInteger, String, Float, Date,
+    DateTime, Boolean, Text, ForeignKey, Numeric, Index, UniqueConstraint
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
@@ -30,6 +30,10 @@ class Company(Base):
     is_inflation_beater = Column(Boolean, default=False)
     market_cap_category = Column(String(50))  # Large, Mid, Small
     
+    # Market (future-proofing for NYSE/NASDAQ)
+    market = Column(String(10), default="NGX")
+    currency = Column(String(3), default="NGN")
+
     # Metadata
     website = Column(String(200))
     description = Column(Text)
@@ -300,6 +304,66 @@ class DataQuality(Base):
     stale_data_alerts = Column(Text)
     
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ConversationHistory(Base):
+    """Per-user conversation history for Claude context window"""
+    __tablename__ = 'conversation_history'
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(BigInteger, nullable=False, index=True)
+    role = Column(String(10), nullable=False)
+    content = Column(Text, nullable=False)
+    command = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_conv_user_time', 'telegram_id', 'created_at'),
+    )
+
+
+class Watchlist(Base):
+    """User price alert subscriptions"""
+    __tablename__ = 'watchlist'
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(BigInteger, nullable=False, index=True)
+    ticker = Column(String(20), nullable=False)
+    alert_price_above = Column(Numeric(12, 2), nullable=True)
+    alert_price_below = Column(Numeric(12, 2), nullable=True)
+    is_active = Column(Boolean, default=True)
+    triggered_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('telegram_id', 'ticker', name='uq_user_ticker_watch'),
+    )
+
+
+class UserFeedback(Base):
+    """Analysis quality ratings from users"""
+    __tablename__ = 'user_feedback'
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(BigInteger, nullable=False, index=True)
+    command = Column(String(50), nullable=False)
+    ticker = Column(String(20), nullable=True)
+    rating = Column(Integer, nullable=False)
+    comment = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SyncLog(Base):
+    """Data sync execution records"""
+    __tablename__ = 'sync_log'
+
+    id = Column(Integer, primary_key=True)
+    sync_type = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False)
+    records_affected = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
 
 
 # Database initialization functions
