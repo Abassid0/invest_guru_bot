@@ -6,12 +6,19 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from sqlalchemy import text
 from database.models import Base, create_database_engine, get_session
 
 
 def migrate():
-    engine = create_database_engine()
+    db_url = os.getenv("DATABASE_URL", "").strip()
+    if not db_url:
+        print("ERROR: DATABASE_URL not set")
+        return
+    engine = create_database_engine(db_url)
 
     # Create all new tables (ConversationHistory, Watchlist, UserFeedback, SyncLog)
     Base.metadata.create_all(engine)
