@@ -143,7 +143,7 @@ async def verify_and_credit(reference: str, engine) -> dict:
 
 
 def verify_webhook_signature(body: bytes, signature: str) -> bool:
-    expected = hmac.new(PAYSTACK_SECRET.encode(), body, hashlib.sha512).hexdigest()
+    expected = hmac.HMAC(PAYSTACK_SECRET.encode(), body, hashlib.sha512).hexdigest()
     return signature == expected
 
 

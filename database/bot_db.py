@@ -152,7 +152,14 @@ def deduct_credit(session, telegram_id: int) -> bool:
 
 def add_credits(session, telegram_id: int, amount: int, plan: str = "",
                 paystack_ref: str = None, amount_ngn: float = 0):
-    """Add credits and record the transaction."""
+    """Add credits and record the transaction. Skips if reference already processed."""
+    if paystack_ref:
+        existing_txn = session.query(BotTransaction).filter_by(
+            paystack_reference=paystack_ref
+        ).first()
+        if existing_txn:
+            return
+
     user = session.query(BotUser).filter_by(telegram_id=telegram_id).first()
     if not user:
         return
@@ -170,7 +177,6 @@ def add_credits(session, telegram_id: int, amount: int, plan: str = "",
 
     session.commit()
 
-    # Reward referrer on first payment
     if paystack_ref and user.referred_by_code:
         _reward_referrer(session, user.referred_by_code, telegram_id, paystack_ref)
 

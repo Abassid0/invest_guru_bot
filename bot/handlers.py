@@ -217,6 +217,19 @@ async def handle_telegram_message(data: dict, engine, telegram_api: str) -> dict
     if not text:
         return {"ok": True}
 
+    try:
+        return await _dispatch(data, engine, telegram_api, chat_id, tg_user, text, user_name, username)
+    except Exception as e:
+        try:
+            await _tg_send(chat_id, f"Something went wrong. Please try again.\n\nError: {str(e)[:150]}", telegram_api)
+        except Exception:
+            pass
+        return {"ok": True}
+
+
+async def _dispatch(data: dict, engine, telegram_api: str, chat_id: int,
+                    tg_user: dict, text: str, user_name: str, username: str) -> dict:
+
     # ── Ensure user exists ────────────────────────────────────────────────
     session = get_session(engine)
     try:
