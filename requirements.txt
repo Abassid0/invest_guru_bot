@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-python-telegram-bot
+python-telegram-bot==20.7
 requests
 supabase
 python-dotenv
@@ -10,6 +10,7 @@ pg8000
 pydantic[email]
 pandas
 numpy
+python-dateutil
 loguru
 dnspython
 httpx

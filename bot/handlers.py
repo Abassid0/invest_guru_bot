@@ -5,6 +5,8 @@ Called from main.py's /telegram-webhook endpoint.
 import os
 import httpx
 from datetime import datetime, timedelta
+from decimal import Decimal
+from sqlalchemy import text as sql_text
 
 from database.models import (
     create_database_engine, get_session,
@@ -17,6 +19,139 @@ from database.bot_db import (
     add_watchlist, get_watchlist, remove_watchlist,
     save_feedback,
 )
+
+
+# ── Live data context builder ─────────────────────────────────────────────────
+
+def _build_data_context(engine, ticker: str) -> str:
+    """Query DB for live prices, price history, macro, and performance for a ticker.
+    Returns a formatted string to inject into the Claude prompt."""
+    session = get_session(engine)
+    parts = []
+    try:
+        # Current macro snapshot
+        macro = session.query(MacroIndicator).order_by(MacroIndicator.date.desc()).first()
+        inflation = session.query(InflationData).order_by(InflationData.date.desc()).first()
+        if macro:
+            parts.append(
+                "=== CURRENT MACRO DATA ===\n"
+                f"Date: {macro.date}\n"
+                f"CBN MPR: {float(macro.mpr):.2f}%\n"
+                f"USD/NGN Official: {float(macro.usd_ngn_official):,.0f}\n"
+                f"USD/NGN Parallel: {float(macro.usd_ngn_parallel):,.0f}\n"
+                f"91-day T-bill: {float(macro.treasury_bill_91d):.2f}%\n"
+                f"364-day T-bill: {float(macro.treasury_bill_364d):.2f}%\n"
+                f"Brent Crude: ${float(macro.brent_crude_usd):.2f}"
+            )
+        if inflation:
+            parts.append(
+                f"Headline Inflation: {float(inflation.headline_cpi):.2f}%\n"
+                f"Food Inflation: {float(inflation.food_inflation):.2f}%"
+            )
+
+        if not ticker or ticker == "NGX MARKET":
+            # Market-wide: show all stock prices
+            rows = session.execute(sql_text(
+                "SELECT c.ticker, c.name, c.sector, sp.close, sp.change_percent, sp.date "
+                "FROM companies c "
+                "JOIN stock_prices sp ON sp.company_id = c.id "
+                "WHERE c.is_active = true "
+                "AND sp.date = (SELECT MAX(date) FROM stock_prices) "
+                "ORDER BY c.sector, c.ticker"
+            )).fetchall()
+            if rows:
+                lines = ["=== ALL NGX STOCK PRICES (latest) ==="]
+                for r in rows:
+                    chg = f"{float(r[4]):+.2f}%" if r[4] else ""
+                    lines.append(f"{r[0]:15s} N{float(r[3]):>10,.2f}  {chg:>8s}  {r[2]}")
+                parts.append("\n".join(lines))
+            return "\n\n".join(parts)
+
+        # Single stock context
+        company = session.query(Company).filter_by(ticker=ticker, is_active=True).first()
+        if not company:
+            parts.append(f"NOTE: Ticker {ticker} not found in our database.")
+            return "\n\n".join(parts)
+
+        parts.append(
+            f"=== STOCK: {company.ticker} — {company.name} ===\n"
+            f"Sector: {company.sector}\n"
+            f"FX Revenue: {'Yes' if company.has_fx_revenue else 'No'}\n"
+            f"Inflation Beater: {'Yes' if company.is_inflation_beater else 'No'}"
+        )
+
+        # Latest price + recent price history (up to 30 data points)
+        prices = session.query(StockPrice).filter_by(
+            company_id=company.id
+        ).order_by(StockPrice.date.desc()).limit(30).all()
+
+        if prices:
+            latest = prices[0]
+            parts.append(
+                f"=== CURRENT PRICE ===\n"
+                f"Price: N{float(latest.close):,.2f}\n"
+                f"Date: {latest.date}\n"
+                f"Change: {float(latest.change_percent or 0):+.2f}%\n"
+                f"Volume: {latest.volume or 0:,}\n"
+                f"Source: {latest.source or 'N/A'}"
+            )
+
+            if len(prices) > 1:
+                lines = ["=== PRICE HISTORY (recent) ==="]
+                for p in prices[:15]:
+                    lines.append(f"  {p.date}  N{float(p.close):>10,.2f}  {float(p.change_percent or 0):+.2f}%  vol={p.volume or 0:>10,}")
+                if len(prices) > 1:
+                    oldest = prices[-1]
+                    period_return = ((float(latest.close) / float(oldest.close)) - 1) * 100
+                    lines.append(f"\nReturn over this period: {period_return:+.1f}%")
+                parts.append("\n".join(lines))
+
+        # Inflation performance
+        perf = session.execute(sql_text(
+            "SELECT return_1yr, return_3yr, return_5yr, "
+            "excess_return_1yr, excess_return_3yr, excess_return_5yr, "
+            "beats_inflation_1yr, beats_inflation_3yr, beats_inflation_all "
+            "FROM inflation_performance WHERE company_id = :cid"
+        ), {"cid": company.id}).fetchone()
+        if perf:
+            def _fmt(val, fmt=".1f"):
+                return f"{float(val):{fmt}}" if val is not None else "N/A"
+            def _fmtp(val):
+                return f"{float(val):+.1f}" if val is not None else "N/A"
+            def _yn(val):
+                return "Yes" if val else "No"
+            parts.append(
+                "=== INFLATION PERFORMANCE ===\n"
+                f"1yr Return: {_fmt(perf[0])}% | Excess vs Inflation: {_fmtp(perf[3])}% | Beats: {_yn(perf[6])}\n"
+                f"3yr Return: {_fmt(perf[1])}% | Excess vs Inflation: {_fmtp(perf[4])}% | Beats: {_yn(perf[7])}\n"
+                f"5yr Return: {_fmt(perf[2])}% | Excess vs Inflation: {_fmtp(perf[5])}% | Beats: {_yn(perf[8])}"
+            )
+
+        # Peer comparison (same sector)
+        peers = session.execute(sql_text(
+            "SELECT c.ticker, sp.close, sp.change_percent "
+            "FROM companies c "
+            "JOIN stock_prices sp ON sp.company_id = c.id "
+            "WHERE c.sector = :sector AND c.is_active = true AND c.ticker != :ticker "
+            "AND sp.date = (SELECT MAX(date) FROM stock_prices WHERE company_id = c.id) "
+            "ORDER BY sp.close DESC"
+        ), {"sector": company.sector, "ticker": ticker}).fetchall()
+        if peers:
+            lines = [f"=== SECTOR PEERS ({company.sector}) ==="]
+            for p in peers:
+                chg = f"{float(p[2]):+.2f}%" if p[2] else ""
+                lines.append(f"  {p[0]:15s}  N{float(p[1]):>10,.2f}  {chg}")
+            parts.append("\n".join(lines))
+
+    finally:
+        session.close()
+
+    return "\n\n".join(parts)
+
+
+def _build_market_context(engine) -> str:
+    """Build market-wide data context for commands that don't target a specific ticker."""
+    return _build_data_context(engine, ticker=None)
 
 
 # ── Telegram helpers ──────────────────────────────────────────────────────────
@@ -321,11 +456,13 @@ async def _dispatch(data: dict, engine, telegram_api: str, chat_id: int,
 
     cmd = None
     claude_prompt = text
+    analysis_ticker = None
     for command, template in COMMAND_PROMPTS.items():
         if text.lower().startswith(command):
             cmd = command
             arg = text[len(command):].strip().upper() or "NGX market"
             claude_prompt = template.format(arg=arg)
+            analysis_ticker = arg if arg != "NGX market" else None
             break
 
     # Credit gate
@@ -351,20 +488,38 @@ async def _dispatch(data: dict, engine, telegram_api: str, chat_id: int,
     # Send typing indicator
     await _tg_send_typing(chat_id, telegram_api)
 
+    # Inject live data from our DB into the prompt
+    try:
+        if analysis_ticker:
+            data_context = _build_data_context(engine, analysis_ticker)
+        else:
+            data_context = _build_market_context(engine)
+        claude_prompt = (
+            f"{claude_prompt}\n\n"
+            f"--- LIVE DATA FROM OUR DATABASE (use this for your analysis) ---\n"
+            f"{data_context}\n"
+            f"--- END LIVE DATA ---\n\n"
+            f"IMPORTANT: Use the data above to provide specific numbers, prices, "
+            f"and analysis. Never say you don't have access to data. "
+            f"You have real-time NGX data. Deliver the analysis."
+        )
+    except Exception:
+        pass
+
     # Fetch conversation history for context
     session = get_session(engine)
     try:
         history = get_conversation_history(session, chat_id, limit=5)
-        save_conversation(session, chat_id, "user", claude_prompt, command=cmd)
+        save_conversation(session, chat_id, "user", text, command=cmd)
     finally:
         session.close()
 
-    # Call Claude with conversation context
+    # Call Claude with conversation context + live data
     try:
         from claude_client import run_analysis
         reply = run_analysis(
             claude_prompt,
-            max_tokens=600,
+            max_tokens=1200,
             conversation_history=history,
             mode="telegram",
         )
@@ -377,12 +532,19 @@ async def _dispatch(data: dict, engine, telegram_api: str, chat_id: int,
         finally:
             session.close()
 
-        await _tg_send(
-            chat_id,
-            reply[:1400] + f"\n\n[{remaining} credit(s) left - /buy to top up]\n"
-            f"Was this helpful? /rate 5 or /rate 1",
-            telegram_api,
-        )
+        footer = f"\n\n[{remaining} credit(s) left - /buy to top up]\nWas this helpful? /rate 5 or /rate 1"
+        full_msg = reply + footer
+
+        # Telegram message limit is 4096 chars; split if needed
+        if len(full_msg) <= 4096:
+            await _tg_send(chat_id, full_msg, telegram_api)
+        else:
+            # Send analysis in chunks, footer on last chunk
+            chunks = [reply[i:i+4000] for i in range(0, len(reply), 4000)]
+            for i, chunk in enumerate(chunks):
+                if i == len(chunks) - 1:
+                    chunk += footer
+                await _tg_send(chat_id, chunk, telegram_api)
     except Exception as e:
         # Refund credit on error
         session = get_session(engine)

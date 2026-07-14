@@ -61,3 +61,22 @@ alter table users add column if not exists referral_count integer not null defau
 
 -- Generate referral codes for existing users (base-36 of telegram_id)
 -- You can run this once manually or let the app generate on first /start
+
+-- Survey responses table
+create table if not exists survey_responses (
+  id                  bigserial primary key,
+  timestamp           text,
+  user_type           text,
+  bot_usage           text,
+  commands_used       text,
+  most_valuable_feature text,
+  satisfaction_stars  integer,
+  analysis_quality    integer,
+  segment             text,
+  email               text,
+  name                text,
+  open_feedback       text,
+  friction_points     text,
+  requested_features  text,
+  created_at          timestamptz default now()
+);

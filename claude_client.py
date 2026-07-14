@@ -75,7 +75,7 @@ def run_analysis(
 
     result = (choices[0].get("message", {}).get("content") or "").strip()
 
-    if mode == "telegram" and len(result) > 1400:
-        result = result[:1380] + "\n\n(Type the command again with a ticker for more detail)"
+    if mode == "telegram" and len(result) > 4000:
+        result = result[:3950] + "\n\n(Message truncated. Ask a follow-up for more detail.)"
 
     return result or "Sorry, I could not generate an analysis. Please try again."

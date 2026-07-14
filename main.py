@@ -21,6 +21,7 @@ from pydantic import BaseModel, EmailStr
 from typing import List, Optional
 from datetime import date, datetime
 from decimal import Decimal
+from sqlalchemy import and_, func, text
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -30,8 +31,6 @@ from database.models import (
     Company, StockPrice, InflationPerformance, InflationData, MacroIndicator,
 )
 from calculators.inflation_calculator import InflationCalculator
-from sqlalchemy import and_, func
-
 from backtest_api_routes import router as backtest_router
 
 app = FastAPI(
@@ -91,6 +90,21 @@ class InflationBeater(BaseModel):
 
 class EmailSignup(BaseModel):
     email: EmailStr; name: str; frequency: str
+
+class SurveyResponse(BaseModel):
+    timestamp: Optional[str] = None
+    user_type: Optional[str] = None
+    bot_usage: Optional[str] = None
+    commands_used: Optional[str] = None
+    most_valuable_feature: Optional[str] = None
+    satisfaction_stars: Optional[int] = None
+    analysis_quality: Optional[int] = None
+    segment: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None
+    open_feedback: Optional[str] = None
+    friction_points: Optional[str] = None
+    requested_features: Optional[str] = None
 
 
 # ── Health & root ─────────────────────────────────────────────────────────────
@@ -372,6 +386,33 @@ async def webhook_info():
     async with httpx.AsyncClient() as client:
         r = await client.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getWebhookInfo")
     return r.json()
+
+
+# ── Survey ───────────────────────────────────────────────────────────────────
+
+@app.post("/api/survey")
+async def save_survey(response: SurveyResponse):
+    session = get_session(engine)
+    try:
+        session.execute(text("""
+            INSERT INTO survey_responses
+            (timestamp, user_type, bot_usage, satisfaction_stars, analysis_quality,
+             segment, email, name, open_feedback, friction_points, requested_features)
+            VALUES (:ts, :ut, :bu, :stars, :qual, :seg, :email, :name, :fb, :fp, :rf)
+        """), {
+            "ts": response.timestamp, "ut": response.user_type, "bu": response.bot_usage,
+            "stars": response.satisfaction_stars, "qual": response.analysis_quality,
+            "seg": response.segment, "email": response.email, "name": response.name,
+            "fb": response.open_feedback, "fp": response.friction_points,
+            "rf": response.requested_features,
+        })
+        session.commit()
+        return {"status": "saved"}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────

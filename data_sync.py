@@ -59,20 +59,71 @@ def _fetch_ngx_prices() -> dict:
     }
 
 
+YAHOO_TICKER_MAP = {
+    "GTCO": "GUARANTY.LG",
+    "ZENITHBANK": "ZENITHBANK.LG",
+    "ACCESSCORP": "ACCESSCORP.LG",
+    "UBA": "UBA.LG",
+    "FIRSTHOLDCO": "FIRSTHOLDCO.LG",
+    "STANBIC": "STANBIC.LG",
+    "FIDELITYBK": "FIDELITYBK.LG",
+    "DANGCEM": "DANGCEM.LG",
+    "BUACEMENT": "BUACEMENT.LG",
+    "MTNN": "MTNN.LG",
+    "AIRTELAFRI": "AIRTELAFRI.LG",
+    "SEPLAT": "SEPLAT.LG",
+    "TOTAL": "TOTAL.LG",
+    "CONOIL": "CONOIL.LG",
+    "NESTLE": "NESTLE.LG",
+    "UNILEVER": "UNILEVER.LG",
+    "NNFM": "NNFM.LG",
+    "NASCON": "NASCON.LG",
+    "PRESCO": "PRESCO.LG",
+    "OKOMUOIL": "OKOMUOIL.LG",
+}
+
+
+def _fetch_yahoo_prices(tickers: list) -> dict:
+    """Fallback: fetch prices from Yahoo Finance for tickers missing from NGX API."""
+    import yfinance as yf
+
+    result = {}
+    for ticker in tickers:
+        yahoo_sym = YAHOO_TICKER_MAP.get(ticker, f"{ticker}.LG")
+        try:
+            data = yf.download(yahoo_sym, period="2d", interval="1d", progress=False, auto_adjust=True)
+            if data.empty:
+                continue
+            raw = data["Close"].values[-1]
+            close = float(raw) if not hasattr(raw, "__len__") else float(raw.flat[0])
+            result[ticker] = {"close": close, "volume": 0, "change_pct": 0.0}
+        except Exception:
+            continue
+    return result
+
+
 def sync_stock_prices() -> dict:
-    """Fetch NGX prices from multiple sources and upsert to DB."""
+    """Fetch NGX prices, fill gaps with Yahoo Finance, upsert to DB."""
     raw = _fetch_ngx_prices()
     if not raw:
-        return {"error": "NGX scrape returned no data — site may be unreachable or layout changed"}
+        return {"error": "NGX scrape returned no data -- site may be unreachable or layout changed"}
 
     session = get_session(engine)
     today = date.today()
     added = 0
     updated = 0
     not_in_db = []
+    yahoo_filled = []
 
     companies = session.query(Company).filter_by(is_active=True).all()
     company_map = {c.ticker: c for c in companies}
+
+    # Find DB stocks missing from NGX API
+    missing_from_api = [t for t in company_map if t not in raw]
+    if missing_from_api:
+        yahoo_prices = _fetch_yahoo_prices(missing_from_api)
+        raw.update(yahoo_prices)
+        yahoo_filled = list(yahoo_prices.keys())
 
     for ticker, data in raw.items():
         company = company_map.get(ticker)
@@ -83,6 +134,7 @@ def sync_stock_prices() -> dict:
         close_price = data["close"]
         volume = data["volume"]
         change_pct = data["change_pct"]
+        source = "Yahoo Finance" if ticker in yahoo_filled else "NGX Group"
 
         existing = session.query(StockPrice).filter_by(
             company_id=company.id, date=today
@@ -100,7 +152,7 @@ def sync_stock_prices() -> dict:
                 close=Decimal(str(round(close_price, 2))),
                 volume=volume,
                 change_percent=Decimal(str(round(change_pct, 4))),
-                source="NGX Group"
+                source=source
             ))
             added += 1
 
@@ -110,6 +162,7 @@ def sync_stock_prices() -> dict:
         "added": added,
         "updated": updated,
         "ngx_tickers_scraped": len(raw),
+        "yahoo_fallback": yahoo_filled,
         "not_in_db": not_in_db[:10],
     }
 
@@ -201,6 +254,20 @@ def run_full_sync() -> dict:
     print("  Syncing Brent crude...")
     result["brent"] = sync_brent_crude()
     print(f"  Done: {result['brent']}")
+
+    # Recalculate inflation performance
+    print("  Recalculating inflation performance...")
+    try:
+        from calculators.inflation_calculator import InflationCalculator
+        calc = InflationCalculator(DATABASE_URL)
+        perf_results = calc.batch_calculate_performance()
+        success = sum(1 for v in perf_results.values() if v)
+        result["performance_recalc"] = f"{success}/{len(perf_results)}"
+        print(f"  Performance: {success}/{len(perf_results)} stocks updated")
+        calc.close()
+    except Exception as e:
+        result["performance_recalc"] = f"error: {e}"
+        print(f"  Performance recalc warning: {e}")
 
     # Housekeeping
     print("  Cleaning old conversations...")
