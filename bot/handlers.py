@@ -21,6 +21,74 @@ from database.bot_db import (
 )
 
 
+# ── Ticker resolver ───────────────────────────────────────────────────────────
+
+TICKER_ALIASES = {
+    "MTN": "MTNN", "MTN NIGERIA": "MTNN", "MTNN NIGERIA": "MTNN",
+    "AIRTEL": "AIRTELAFRI", "AIRTEL AFRICA": "AIRTELAFRI",
+    "DANGOTE": "DANGCEM", "DANGOTE CEMENT": "DANGCEM",
+    "BUA": "BUACEMENT", "BUA CEMENT": "BUACEMENT",
+    "ZENITH": "ZENITHBANK", "ZENITH BANK": "ZENITHBANK",
+    "GTB": "GTCO", "GT BANK": "GTCO", "GTBANK": "GTCO", "GUARANTY": "GTCO",
+    "ACCESS": "ACCESSCORP", "ACCESS BANK": "ACCESSCORP", "ACCESS HOLDINGS": "ACCESSCORP",
+    "FIDELITY": "FIDELITYBK", "FIDELITY BANK": "FIDELITYBK",
+    "FIRST HOLDCO": "FIRSTHOLDCO", "FBN": "FIRSTHOLDCO", "FBN HOLDINGS": "FIRSTHOLDCO",
+    "FIRST BANK": "FIRSTHOLDCO", "FIRSTBANK": "FIRSTHOLDCO",
+    "STANBIC IBTC": "STANBIC", "IBTC": "STANBIC",
+    "NESTLE": "NESTLE", "NESTLE NIGERIA": "NESTLE",
+    "UNILEVER NIGERIA": "UNILEVER",
+    "SEPLAT ENERGY": "SEPLAT",
+    "TOTAL ENERGIES": "TOTAL", "TOTALENERGIES": "TOTAL",
+    "FLOUR MILLS": "NNFM", "FLOUR MILL": "NNFM", "FLOURMILL": "NNFM",
+    "OKOMU": "OKOMUOIL", "OKOMU OIL": "OKOMUOIL",
+    "NASCON ALLIED": "NASCON",
+}
+
+
+def _resolve_ticker(engine, raw_input: str) -> str:
+    """Resolve user input (company name, alias, or ticker) to a valid DB ticker."""
+    if not raw_input:
+        return raw_input
+
+    clean = raw_input.strip().upper()
+
+    # Direct alias match
+    if clean in TICKER_ALIASES:
+        return TICKER_ALIASES[clean]
+
+    # Check if it's already a valid ticker
+    session = get_session(engine)
+    try:
+        exact = session.query(Company).filter_by(ticker=clean, is_active=True).first()
+        if exact:
+            return clean
+
+        # Search by company name (case-insensitive partial match)
+        from sqlalchemy import func
+        companies = session.query(Company).filter(
+            Company.is_active == True,
+            func.upper(Company.name).contains(clean)
+        ).all()
+        if len(companies) == 1:
+            return companies[0].ticker
+
+        # Try matching first word against ticker or name
+        first_word = clean.split()[0] if " " in clean else clean
+        if first_word in TICKER_ALIASES:
+            return TICKER_ALIASES[first_word]
+
+        # Fuzzy: check if input is substring of any ticker
+        all_companies = session.query(Company).filter_by(is_active=True).all()
+        for c in all_companies:
+            if first_word in c.ticker or first_word in c.name.upper():
+                return c.ticker
+
+    finally:
+        session.close()
+
+    return clean
+
+
 # ── Live data context builder ─────────────────────────────────────────────────
 
 def _build_data_context(engine, ticker: str) -> str:
@@ -461,8 +529,12 @@ async def _dispatch(data: dict, engine, telegram_api: str, chat_id: int,
         if text.lower().startswith(command):
             cmd = command
             arg = text[len(command):].strip().upper() or "NGX market"
+            # Resolve company names/aliases to DB tickers
+            if arg != "NGX MARKET":
+                resolved = _resolve_ticker(engine, arg)
+                analysis_ticker = resolved
+                arg = resolved
             claude_prompt = template.format(arg=arg)
-            analysis_ticker = arg if arg != "NGX market" else None
             break
 
     # Credit gate
