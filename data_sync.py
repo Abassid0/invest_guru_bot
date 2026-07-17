@@ -255,6 +255,19 @@ def run_full_sync() -> dict:
     result["brent"] = sync_brent_crude()
     print(f"  Done: {result['brent']}")
 
+    # Sync inflation data
+    print("  Syncing inflation data...")
+    try:
+        from scrapers.nbs_inflation_scraper import sync_inflation_to_db
+        session = get_session(engine)
+        inflation_result = sync_inflation_to_db(session)
+        session.close()
+        result["inflation"] = inflation_result
+        print(f"  Inflation: {inflation_result}")
+    except Exception as e:
+        result["inflation"] = f"error: {e}"
+        print(f"  Inflation sync warning: {e}")
+
     # Recalculate inflation performance
     print("  Recalculating inflation performance...")
     try:
