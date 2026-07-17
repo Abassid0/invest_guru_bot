@@ -6,7 +6,9 @@ Run manually:   python data_sync.py
 Run via API:    POST /api/sync?admin_key=X  (from Railway scheduler or cron)
 
 Data sources:
-  - Stock prices  : NGX Group REST API (ngxgroup.com)
+  - Stock prices  : NGX Pulse API (primary, ngxpulse.ng — 20min refresh)
+                    NGX Group REST API (fallback #1, ngxgroup.com)
+                    Yahoo Finance (fallback #2, .LG tickers)
   - FX rates      : ExchangeRate-API (free, no key needed)
   - Brent crude   : Yahoo Finance (BZ=F)
   - MPR + T-bills : CBN JSON API (cbn.gov.ng/api/GetAllMoneyMarketIndicators,
@@ -36,7 +38,51 @@ if not DATABASE_URL:
 
 engine = create_database_engine(DATABASE_URL)
 
+NGX_PULSE_API_KEY = (os.getenv("NGX_PULSE_API_KEY") or "").strip()
+NGX_PULSE_URL = "https://www.ngxpulse.ng/api/ngxdata/stocks"
 
+
+def _fetch_ngx_pulse_prices() -> tuple[dict, dict]:
+    """
+    Primary source: NGX Pulse API — all 150+ equities in one call.
+    Returns (prices_dict, names_dict) where:
+      prices = {ticker: {"close": float, "volume": int, "change_pct": float}}
+      names  = {ticker: "Full Company Name Plc"}
+    """
+    if not NGX_PULSE_API_KEY:
+        return {}, {}
+
+    r = requests.get(
+        NGX_PULSE_URL,
+        headers={"X-API-Key": NGX_PULSE_API_KEY, "Accept": "application/json"},
+        timeout=20,
+    )
+    r.raise_for_status()
+    data = r.json()
+
+    stocks = data.get("stocks") if isinstance(data, dict) else data
+    if not stocks:
+        return {}, {}
+
+    prices = {}
+    names = {}
+    for row in stocks:
+        ticker = (row.get("symbol") or "").strip().upper()
+        if not ticker:
+            continue
+        price = row.get("current_price")
+        if price is None:
+            continue
+        prices[ticker] = {
+            "close": float(price),
+            "volume": int(row.get("volume") or 0),
+            "change_pct": float(row.get("change_percent") or 0),
+        }
+        name = row.get("name")
+        if name and name != ticker:
+            names[ticker] = name
+
+    return prices, names
 
 
 def _fetch_ngx_prices() -> dict:
@@ -103,27 +149,81 @@ def _fetch_yahoo_prices(tickers: list) -> dict:
 
 
 def sync_stock_prices() -> dict:
-    """Fetch NGX prices, fill gaps with Yahoo Finance, upsert to DB."""
-    raw = _fetch_ngx_prices()
+    """
+    Fetch stock prices using 3-tier fallback:
+      1. NGX Pulse API (primary — all stocks in one call)
+      2. NGX Group REST API (fallback #1 for any missing tickers)
+      3. Yahoo Finance (fallback #2 for remaining gaps)
+    Also updates Company.name from Pulse data where ticker == name.
+    """
+    primary_source = "NGX Pulse"
+    pulse_names = {}
+    raw = {}
+
+    # Tier 1: NGX Pulse API
+    try:
+        raw, pulse_names = _fetch_ngx_pulse_prices()
+        if raw:
+            print(f"    NGX Pulse: {len(raw)} stocks fetched")
+    except Exception as e:
+        print(f"    NGX Pulse failed: {e}")
+
+    # Tier 2: NGX Group REST API (fill gaps or full fallback)
+    ngx_group_filled = []
     if not raw:
-        return {"error": "NGX scrape returned no data -- site may be unreachable or layout changed"}
+        primary_source = "NGX Group"
+        try:
+            raw = _fetch_ngx_prices()
+            if raw:
+                print(f"    NGX Group fallback: {len(raw)} stocks fetched")
+        except Exception as e:
+            print(f"    NGX Group also failed: {e}")
+
+    if not raw:
+        return {"error": "Both NGX Pulse and NGX Group returned no data"}
 
     session = get_session(engine)
     today = date.today()
     added = 0
     updated = 0
+    names_updated = 0
     not_in_db = []
     yahoo_filled = []
 
     companies = session.query(Company).filter_by(is_active=True).all()
     company_map = {c.ticker: c for c in companies}
 
-    # Find DB stocks missing from NGX API
+    # Fill gaps from NGX Group if Pulse was primary
+    if primary_source == "NGX Pulse":
+        missing_from_pulse = [t for t in company_map if t not in raw]
+        if missing_from_pulse:
+            try:
+                ngx_group_prices = _fetch_ngx_prices()
+                for t in missing_from_pulse:
+                    if t in ngx_group_prices:
+                        raw[t] = ngx_group_prices[t]
+                        ngx_group_filled.append(t)
+            except Exception:
+                pass
+            if ngx_group_filled:
+                print(f"    NGX Group filled {len(ngx_group_filled)} gaps")
+
+    # Tier 3: Yahoo Finance for remaining gaps
     missing_from_api = [t for t in company_map if t not in raw]
     if missing_from_api:
         yahoo_prices = _fetch_yahoo_prices(missing_from_api)
         raw.update(yahoo_prices)
         yahoo_filled = list(yahoo_prices.keys())
+        if yahoo_filled:
+            print(f"    Yahoo Finance filled {len(yahoo_filled)} gaps")
+
+    # Update company names from Pulse when Pulse name is longer/richer
+    if pulse_names:
+        for ticker, full_name in pulse_names.items():
+            company = company_map.get(ticker)
+            if company and full_name and len(full_name) > len(company.name or ""):
+                company.name = full_name
+                names_updated += 1
 
     for ticker, data in raw.items():
         company = company_map.get(ticker)
@@ -134,7 +234,13 @@ def sync_stock_prices() -> dict:
         close_price = data["close"]
         volume = data["volume"]
         change_pct = data["change_pct"]
-        source = "Yahoo Finance" if ticker in yahoo_filled else "NGX Group"
+
+        if ticker in yahoo_filled:
+            source = "Yahoo Finance"
+        elif ticker in ngx_group_filled:
+            source = "NGX Group"
+        else:
+            source = primary_source
 
         existing = session.query(StockPrice).filter_by(
             company_id=company.id, date=today
@@ -159,9 +265,12 @@ def sync_stock_prices() -> dict:
     session.commit()
     session.close()
     return {
+        "primary_source": primary_source,
         "added": added,
         "updated": updated,
-        "ngx_tickers_scraped": len(raw),
+        "total_tickers": len(raw),
+        "names_updated": names_updated,
+        "ngx_group_fallback": ngx_group_filled,
         "yahoo_fallback": yahoo_filled,
         "not_in_db": not_in_db[:10],
     }
