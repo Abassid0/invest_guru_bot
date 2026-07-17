@@ -6,12 +6,12 @@ Run manually:   python data_sync.py
 Run via API:    POST /api/sync?admin_key=X  (from Railway scheduler or cron)
 
 Data sources:
-  - Stock prices  : NGX Group website scraping (ngxgroup.com)
+  - Stock prices  : NGX Group REST API (ngxgroup.com)
   - FX rates      : ExchangeRate-API (free, no key needed)
-  - Brent crude   : Yahoo Finance (BZ=F — works fine)
-
-NOTE: Claude's web_search tool in the Telegram bot ALSO provides real-time
-data on every query — the DB sync is a secondary layer for REST API endpoints.
+  - Brent crude   : Yahoo Finance (BZ=F)
+  - MPR + T-bills : CBN JSON API (cbn.gov.ng/api/GetAllMoneyMarketIndicators,
+                    cbn.gov.ng/api/GetAllSecuritiesNTB)
+  - Inflation     : CBN JSON API (cbn.gov.ng/api/GetAllInflationRates)
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -213,6 +213,78 @@ def sync_fx_rates() -> dict:
         return {"error": str(e)}
 
 
+def sync_cbn_macro_rates() -> dict:
+    """Fetch MPR and T-bill rates from CBN JSON APIs and update MacroIndicator."""
+    CBN_MARKET_URL = "https://www.cbn.gov.ng/api/GetAllMoneyMarketIndicators"
+    CBN_NTB_URL = "https://www.cbn.gov.ng/api/GetAllSecuritiesNTB"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    updates = {}
+
+    try:
+        # Fetch MPR and average T-bill rate
+        r = requests.get(CBN_MARKET_URL, headers=headers, timeout=20)
+        r.raise_for_status()
+        market_data = r.json()
+        if market_data:
+            latest = market_data[0]
+            if latest.get("mpr"):
+                updates["mpr"] = Decimal(latest["mpr"])
+            if latest.get("treasuryBill"):
+                updates["tbill_avg"] = float(latest["treasuryBill"])
+    except Exception as e:
+        updates["market_error"] = str(e)
+
+    try:
+        # Fetch latest NTB auction stop rates by tenor
+        r = requests.get(CBN_NTB_URL, headers=headers, timeout=20)
+        r.raise_for_status()
+        ntb_data = r.json()
+        tenor_rates = {}
+        if ntb_data:
+            latest_date = ntb_data[0].get("auctionDate", "")
+            for row in ntb_data:
+                if row.get("auctionDate") != latest_date:
+                    break
+                tenor = row.get("tenor", "")
+                rate = row.get("rate")
+                if rate:
+                    tenor_rates[tenor] = Decimal(rate)
+
+        if "91DAY" in tenor_rates:
+            updates["treasury_bill_91d"] = tenor_rates["91DAY"]
+        if "182DAY" in tenor_rates:
+            updates["treasury_bill_182d"] = tenor_rates["182DAY"]
+        if "364DAY" in tenor_rates:
+            updates["treasury_bill_364d"] = tenor_rates["364DAY"]
+    except Exception as e:
+        updates["ntb_error"] = str(e)
+
+    if not any(k in updates for k in ("mpr", "treasury_bill_91d", "treasury_bill_182d", "treasury_bill_364d")):
+        return {"error": "No CBN data fetched", "details": updates}
+
+    # Apply to latest MacroIndicator row
+    session = get_session(engine)
+    try:
+        latest = session.query(MacroIndicator).order_by(MacroIndicator.date.desc()).first()
+        if latest:
+            if "mpr" in updates:
+                latest.mpr = updates["mpr"]
+            if "treasury_bill_91d" in updates:
+                latest.treasury_bill_91d = updates["treasury_bill_91d"]
+            if "treasury_bill_182d" in updates:
+                latest.treasury_bill_182d = updates["treasury_bill_182d"]
+            if "treasury_bill_364d" in updates:
+                latest.treasury_bill_364d = updates["treasury_bill_364d"]
+            session.commit()
+    finally:
+        session.close()
+
+    return {k: float(v) if isinstance(v, Decimal) else v for k, v in updates.items()}
+
+
 def sync_brent_crude() -> dict:
     """Fetch Brent crude price and update MacroIndicator."""
     try:
@@ -254,6 +326,10 @@ def run_full_sync() -> dict:
     print("  Syncing Brent crude...")
     result["brent"] = sync_brent_crude()
     print(f"  Done: {result['brent']}")
+
+    print("  Syncing CBN macro rates (MPR + T-bills)...")
+    result["cbn_macro"] = sync_cbn_macro_rates()
+    print(f"  Done: {result['cbn_macro']}")
 
     # Sync inflation data
     print("  Syncing inflation data...")
