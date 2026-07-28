@@ -808,6 +808,11 @@ async def _handle_macro(chat_id: int, engine, telegram_api: str) -> dict:
             f"USD/NGN Parallel: N{float(macro.usd_ngn_parallel):,.0f}\n"
             f"91-day T-bill: {float(macro.treasury_bill_91d):.2f}%\n"
             f"Brent Crude: ${float(macro.brent_crude_usd):.0f}\n\n"
+            "Sources:\n"
+            "- MPR & T-bills: CBN (cbn.gov.ng)\n"
+            "- Inflation: CBN / NBS (nigerianstat.gov.ng)\n"
+            "- FX rates: ExchangeRate-API\n"
+            "- Brent Crude: Yahoo Finance\n\n"
             "Use /compare to see how T-bills stack up vs equities.",
             telegram_api
         )
