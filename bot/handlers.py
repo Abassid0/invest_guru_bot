@@ -633,7 +633,8 @@ async def _dispatch(data: dict, engine, telegram_api: str, chat_id: int,
         finally:
             session.close()
 
-        footer = f"\n\n[{remaining} credit(s) left - /buy to top up]\nWas this helpful? /rate 5 or /rate 1"
+        sources = _source_attribution(cmd)
+        footer = f"\n\n{sources}[{remaining} credit(s) left - /buy to top up]\nWas this helpful? /rate 5 or /rate 1"
         full_msg = reply + footer
 
         # Telegram message limit is 4096 chars; split if needed
@@ -788,6 +789,42 @@ async def _handle_feedback(text: str, chat_id: int, engine, telegram_api: str) -
     }
     await _tg_send(chat_id, responses.get(rating, "Thanks for your feedback!"), telegram_api)
     return {"ok": True}
+
+
+SOURCE_STOCK = "Stock data: NGX Pulse (ngxpulse.ng) / NGX Group / Yahoo Finance"
+SOURCE_MACRO = "Macro: CBN (cbn.gov.ng)"
+SOURCE_INFLATION = "Inflation: CBN / NBS (nigerianstat.gov.ng)"
+SOURCE_FX = "FX rates: ExchangeRate-API"
+SOURCE_BRENT = "Brent Crude: Yahoo Finance"
+SOURCE_AI = "Analysis: Claude AI (not financial advice)"
+
+COMMAND_SOURCES = {
+    "/analyse":     [SOURCE_STOCK, SOURCE_INFLATION, SOURCE_AI],
+    "/technical":   [SOURCE_STOCK, SOURCE_AI],
+    "/fullanalysis":[SOURCE_STOCK, SOURCE_MACRO, SOURCE_INFLATION, SOURCE_AI],
+    "/financials":  [SOURCE_STOCK, SOURCE_MACRO, SOURCE_AI],
+    "/moat":        [SOURCE_STOCK, SOURCE_AI],
+    "/value":       [SOURCE_STOCK, SOURCE_MACRO, SOURCE_INFLATION, SOURCE_AI],
+    "/risk":        [SOURCE_STOCK, SOURCE_MACRO, SOURCE_FX, SOURCE_AI],
+    "/growth":      [SOURCE_STOCK, SOURCE_AI],
+    "/institutional":[SOURCE_STOCK, SOURCE_MACRO, SOURCE_AI],
+    "/debate":      [SOURCE_STOCK, SOURCE_INFLATION, SOURCE_AI],
+    "/earnings":    [SOURCE_STOCK, SOURCE_AI],
+    "/sentiment":   [SOURCE_STOCK, SOURCE_AI],
+    "/tbills":      [SOURCE_MACRO, SOURCE_INFLATION, SOURCE_AI],
+    "/bonds":       [SOURCE_MACRO, SOURCE_INFLATION, SOURCE_AI],
+    "/funds":       [SOURCE_MACRO, SOURCE_INFLATION, SOURCE_AI],
+    "/compare":     [SOURCE_STOCK, SOURCE_MACRO, SOURCE_INFLATION, SOURCE_AI],
+    "/dividend":    [SOURCE_STOCK, SOURCE_MACRO, SOURCE_INFLATION, SOURCE_AI],
+    "/portfolio":   [SOURCE_STOCK, SOURCE_INFLATION, SOURCE_AI],
+    "/global":      [SOURCE_STOCK, SOURCE_MACRO, SOURCE_FX, SOURCE_BRENT, SOURCE_AI],
+    "/devaluation": [SOURCE_STOCK, SOURCE_FX, SOURCE_AI],
+}
+
+
+def _source_attribution(cmd: str | None) -> str:
+    sources = COMMAND_SOURCES.get(cmd, [SOURCE_STOCK, SOURCE_MACRO, SOURCE_AI])
+    return "Sources:\n" + "\n".join(f"- {s}" for s in sources) + "\n\n"
 
 
 async def _handle_macro(chat_id: int, engine, telegram_api: str) -> dict:
